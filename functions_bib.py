@@ -1148,6 +1148,7 @@ def Test_Step_Ensemble(model_list, patch_test, step, out_sigmoid=False, threshol
         
     # Loop no modelo 
     for i, model in enumerate(model_list):
+        print(f'Predizendo usando modelo número {i} \n\n')
         predicted_classes, result = Test_Step(model, patch_test, step, out_sigmoid=out_sigmoid, threshold_sigmoid=threshold_sigmoid)
         pred_list.append(predicted_classes)
         prob_list.append(result)
@@ -2006,7 +2007,7 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
 # Etapa 3 ao processamento no qual a entrada do pós-processamento é a imagem original com blur gaussiano mais a predição desses dados ruidosos com o modelo
 # Etapa 4 se refere ao pós-processamento   
 def avalia_modelo_ensemble(input_dir: str, output_dir: str, metric_name = 'F1-Score', 
-                           etapa=3, dist_buffers = [3], std_blur = 0.4):
+                           etapa=3, dist_buffers = [3], std_blur = 0.4, n_members=5):
     metric_name = metric_name
     etapa = etapa
     dist_buffers = dist_buffers
@@ -2027,7 +2028,7 @@ def avalia_modelo_ensemble(input_dir: str, output_dir: str, metric_name = 'F1-Sc
     
     # Nome base do modelo salvo e número de membros do ensemble    
     best_model_filename = 'best_model'
-    n_members = 5
+    n_members = n_members
     
     # Show and save history
     for i in range(n_members):
@@ -2036,7 +2037,7 @@ def avalia_modelo_ensemble(input_dir: str, output_dir: str, metric_name = 'F1-Sc
             
         # Show and save history
         show_graph_loss_accuracy(np.asarray(history), 1, metric_name = metric_name, save=True, save_path=output_dir,
-                                 save_name='plotagem' + '_' + str(i) + '.png')
+                                 save_name='plotagem' + '_' + str(i+1) + '.png')
     
     # Load model
     model_list = []
