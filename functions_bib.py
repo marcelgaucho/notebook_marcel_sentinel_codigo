@@ -1111,22 +1111,8 @@ def Test(model, patch_test):
 # Faz a previsão de todos os patches de treinamento aos poucos (em determinados lotes).
 # Isso é para poupar o processamento do computador
 # Retorna também a probabilidade das classes, além da predição
-def Test_Step(model, patch_test, step, out_sigmoid=False, threshold_sigmoid=0.5):
-    n = len(patch_test)
-    i = 0
-    while i < n:
-        print('Predicting batch {:.0f}/{}'.format(i/step+1, n//step + (n%step>0) )) # Round down and up, respectively
-        # Patch being transformed by NN 
-        patch_batch = patch_test[i:i+step]
-        
-        # Concatenate result patches to form result
-        if i < step:
-            result = model.predict(patch_batch)
-        else:
-            patch_batch_r_new = model.predict(patch_batch)
-            result = np.concatenate((result, patch_batch_r_new), axis=0)
-        
-        i = i+step
+def Test_Step(model, patch_test, step=2, out_sigmoid=False, threshold_sigmoid=0.5):
+    result = model.predict(patch_test, batch_size=step, verbose=1)
 
     if out_sigmoid:
         predicted_classes = np.where(result > threshold_sigmoid, 1, 0)
@@ -1762,8 +1748,8 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
             x_valid_blur = gaussian_filter(x_valid.astype(np.float32), sigma=(0 ,std_blur, std_blur, 0)).astype(np.float16)
             pred_train_blur, _ = Test_Step(model, x_train_blur, 2)
             pred_valid_blur, _ = Test_Step(model, x_valid_blur, 2)
-            x_train_new = np.concatenate((x_train_blur, pred_train_blur), axis=-1)
-            x_valid_new = np.concatenate((x_valid_blur, pred_valid_blur), axis=-1)
+            x_train_new = np.concatenate((x_train, pred_train_blur), axis=-1)
+            x_valid_new = np.concatenate((x_valid, pred_valid_blur), axis=-1)
             salva_arrays(output_dir, x_train=x_train_new, x_valid=x_valid_new)
     
         
@@ -1873,7 +1859,7 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
             print('Fazendo Blur nas imagens de teste e gerando as predições')
             x_test_blur = gaussian_filter(x_test.astype(np.float32), sigma=(0 ,std_blur, std_blur, 0)).astype(np.float16)
             pred_test_blur, _ = Test_Step(model, x_test_blur, 2)
-            x_test_new = np.concatenate((x_test_blur, pred_test_blur), axis=-1)
+            x_test_new = np.concatenate((x_test, pred_test_blur), axis=-1)
             salva_arrays(output_dir, x_test=x_test_new)
         
     # Faz os Buffers necessários, para teste, nas imagens
@@ -2469,3 +2455,90 @@ def gera_mosaicos(output_dir, pred_array, labels_paths, prefix='outmosaic', patc
     # Retorna lista de mosaicos
     return pred_test_mosaic_list
             
+
+
+
+def patches_to_images_tf(
+    patches: np.ndarray, image_shape: tuple,
+    overlap: float = 0.5, stitch_type='average', indices=None) -> np.ndarray:
+    """Reconstructs images from patches.
+
+    Args:
+        patches (ndarray): Array with batch of patches to convert to batch of images.
+            [batch_size, #patch_y, #patch_x, patch_size_y, patch_size_x, n_channels]
+        image_shape (Tuple): Shape of output image. (y, x, n_channels) or (y, x)
+        overlap (float, optional): Overlap factor between patches. Defaults to 0.5.
+        stitch_type (str, optional): Type of stitching to use. Defaults to 'average'.
+            Options: 'average', 'replace'.
+        indices (ndarray, optional): Indices of patches in image. Defaults to None.
+            If provided, indices are used to stitch patches together and not recomputed
+            to save time. Has same shape as patches shape but with added index axis (last).
+    Returns:
+        images (ndarray): Reconstructed batch of images from batch of patches.
+
+    """
+    assert len(image_shape) == 3, 'image_shape should have 3 dimensions, namely: ' \
+        '(#image_y, #image_x, (n_channels))'
+    assert len(patches.shape) == 6 , 'patches should have 6 dimensions, namely: ' \
+        '[batch, #patch_y, #patch_x, patch_size_y, patch_size_x, n_channels]'
+    assert overlap >= 0 and overlap < 1, 'overlap should be between 0 and 1'
+    assert stitch_type in ['average', 'replace'], 'stitch_type should be either ' \
+        '"average" or "replace"'
+
+    batch_size, n_patches_y, n_patches_x, *patch_shape = patches.shape
+    n_channels = image_shape[-1]
+    dtype = patches.dtype
+
+    assert len(patch_shape) == len(image_shape)
+
+    # Kernel for counting overlaps
+    if stitch_type == 'average':
+        kernel_ones = tf.ones((batch_size, n_patches_y, n_patches_x, *patch_shape), dtype=tf.int32)
+        mask = tf.zeros((batch_size, *image_shape), dtype=tf.int32)
+
+    if indices is None:
+        if overlap:
+            nonoverlap = np.array([1 - overlap, 1 - overlap, 1 / patch_shape[-1]])
+            stride = (np.array(patch_shape) * nonoverlap).astype(int)
+        else:
+            stride = (np.array(patch_shape)).astype(int)
+
+        channel_idx = tf.reshape(tf.range(n_channels), (1, 1, 1, 1, 1, n_channels, 1))
+        channel_idx = (tf.ones((batch_size, n_patches_y, n_patches_x, *patch_shape, 1), dtype=tf.int32) * channel_idx)
+
+        batch_idx = tf.reshape(tf.range(batch_size), (batch_size, 1, 1, 1, 1, 1, 1))
+        batch_idx = (tf.ones((batch_size, n_patches_y, n_patches_x, *patch_shape, 1), dtype=tf.int32) * batch_idx)
+
+        # TODO: create indices without looping possibly
+        indices = []
+        for j in range(n_patches_y):
+            for i in range(n_patches_x):
+                # Make indices from meshgrid
+                _indices = tf.meshgrid(
+                    tf.range(stride[0] * j, # row start
+                            patch_shape[0] + stride[0] * j), # row end
+                    tf.range(stride[1] * i, # col_start
+                            patch_shape[1] + stride[1] * i), indexing='ij') # col_end
+
+                _indices = tf.stack(_indices, axis=-1)
+                indices.append(_indices)
+
+        indices = tf.reshape(tf.stack(indices, axis=0), (n_patches_y, n_patches_x, *patch_shape[:2], 2))
+
+        indices = tf.repeat(indices[tf.newaxis, ...], batch_size, axis=0)
+        indices = tf.repeat(indices[..., tf.newaxis, :], n_channels, axis=-2)
+
+        indices = tf.concat([batch_idx, indices, channel_idx], axis=-1)
+
+    # create output image tensor
+    images = tf.zeros([batch_size, *image_shape], dtype=dtype)
+
+    # Add sliced image to recovered image indices
+    if stitch_type == 'replace':
+        images = tf.tensor_scatter_nd_update(images, indices, patches)
+    else:
+        images = tf.tensor_scatter_nd_add(images, indices, patches)
+        mask = tf.tensor_scatter_nd_add(mask, indices, kernel_ones)
+        images = tf.cast(images, tf.float32) / tf.cast(mask, tf.float32)
+
+    return images, indices
