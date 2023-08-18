@@ -12,6 +12,7 @@ import os, shutil
 import math
 import tensorflow as tf
 import pickle
+import random
 
 from tensorflow.keras.layers import Input, concatenate, Conv2D, BatchNormalization, Activation 
 from tensorflow.keras.layers import MaxPool2D, Conv2DTranspose, UpSampling2D, Concatenate
@@ -1659,7 +1660,8 @@ def gera_graficos(metrics_dirs_list, lista_nomes_exp, save_path=r''):
 # Etapa 3 ao processamento no qual a entrada do pós-processamento é a imagem original com blur gaussiano mais a predição desses dados ruidosos com o modelo
 # Etapa 4 se refere ao pós-processamento   
 def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score', 
-                  etapa=3, dist_buffers = [3], std_blur = 0.4):
+                  etapa=3, dist_buffers = [3], std_blur = 0.4, subpatch_size=32,
+                  k=3):
     metric_name = metric_name
     etapa = etapa
     dist_buffers = dist_buffers
@@ -1672,7 +1674,7 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
     
     # Copia y_train e y_valid para diretório de saída, pois eles serão usados depois como entrada (rótulos)
     # para o pós-processamento
-    if etapa==1 or etapa==2 or etapa==3:
+    if etapa==1 or etapa==2 or etapa==3 or etapa==4:
         shutil.copy(input_dir + 'y_train.npy', output_dir + 'y_train.npy')
         shutil.copy(input_dir + 'y_valid.npy', output_dir + 'y_valid.npy')
         
@@ -1751,6 +1753,16 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
             x_train_new = np.concatenate((x_train, pred_train_blur), axis=-1)
             x_valid_new = np.concatenate((x_valid, pred_valid_blur), axis=-1)
             salva_arrays(output_dir, x_train=x_train_new, x_valid=x_valid_new)
+            
+    if etapa == 4:
+        if not os.path.exists(os.path.join(output_dir, 'x_train.npy')) or \
+            not os.path.exists(os.path.join(output_dir, 'x_valid.npy')):
+            print('Fazendo Blur nas imagens de treino e validação (em subpatches) e gerando as predições')
+            x_train_blur, pred_train_blur = blur_x_patches(x_train, y_train, subpatch_size, k, std_blur, model)
+            x_valid_blur, pred_valid_blur = blur_x_patches(x_valid, y_valid, subpatch_size, k, std_blur, model)
+            x_train_new = np.concatenate((x_train, pred_train_blur), axis=-1).astype(np.float16)
+            x_valid_new = np.concatenate((x_valid, pred_valid_blur), axis=-1).astype(np.float16)
+            salva_arrays(output_dir, x_train=x_train_new, x_valid=x_valid_new)
     
         
     # Faz os Buffers necessários, para treino e validação, nas imagens 
@@ -1817,7 +1829,7 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
     y_test = np.load(input_dir + 'y_test.npy')
     
     # Copia y_test para diretório de saída, pois ele será usado como entrada (rótulo) para o pós-processamento
-    if etapa==1 or etapa==2 or etapa==3:
+    if etapa==1 or etapa==2 or etapa==3 or etapa==4:
         shutil.copy(input_dir + 'y_test.npy', output_dir + 'y_test.npy')
         
     
@@ -1861,7 +1873,14 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
             pred_test_blur, _ = Test_Step(model, x_test_blur, 2)
             x_test_new = np.concatenate((x_test, pred_test_blur), axis=-1)
             salva_arrays(output_dir, x_test=x_test_new)
-        
+            
+    if etapa == 4:
+        if not os.path.exists(os.path.join(output_dir, 'x_test.npy')):
+            print('Fazendo Blur nas imagens de teste (em subpatches) e gerando as predições')
+            x_test_blur, pred_test_blur = blur_x_patches(x_test, y_test, subpatch_size, k, std_blur, model)
+            x_test_new = np.concatenate((x_test, pred_test_blur), axis=-1)
+            salva_arrays(output_dir, x_test=x_test_new)
+            
     # Faz os Buffers necessários, para teste, nas imagens
     
     buffers_y_test = {}
@@ -1991,7 +2010,8 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
 # Etapa 1 se refere ao processamento no qual a entrada do pós-processamento é a predição do modelo
 # Etapa 2 ao processamento no qual a entrada do pós-processamento é a imagem original mais a predição do modelo
 # Etapa 3 ao processamento no qual a entrada do pós-processamento é a imagem original com blur gaussiano mais a predição desses dados ruidosos com o modelo
-# Etapa 4 se refere ao pós-processamento   
+# Etapa 4 ao processamento no qual a entrada do pós-processamento é a imagem original mais a predição dela aplicando um blur gaussiano em apenas alguns subpatches
+# Etapa 5 se refere ao pós-processamento   
 def avalia_modelo_ensemble(input_dir: str, output_dir: str, metric_name = 'F1-Score', 
                            etapa=3, dist_buffers = [3], std_blur = 0.4, n_members=5):
     metric_name = metric_name
@@ -2105,6 +2125,9 @@ def avalia_modelo_ensemble(input_dir: str, output_dir: str, metric_name = 'F1-Sc
             x_train_new = np.concatenate((x_train_blur, pred_train_blur), axis=-1).astype(np.float16)
             x_valid_new = np.concatenate((x_valid_blur, pred_valid_blur), axis=-1).astype(np.float16)
             salva_arrays(output_dir, x_train=x_train_new, x_valid=x_valid_new)
+            
+
+
         
         
     # Faz os Buffers necessários, para treino e validação, nas imagens 
@@ -2542,3 +2565,189 @@ def patches_to_images_tf(
         images = tf.cast(images, tf.float32) / tf.cast(mask, tf.float32)
 
     return images, indices
+
+
+
+
+
+def mode(ndarray, axis=0):
+    # Check inputs
+    ndarray = np.asarray(ndarray)
+    ndim = ndarray.ndim
+    if ndarray.size == 1:
+        return (ndarray[0], 1)
+    elif ndarray.size == 0:
+        raise Exception('Cannot compute mode on empty array')
+    try:
+        axis = range(ndarray.ndim)[axis]
+    except:
+        raise Exception('Axis "{}" incompatible with the {}-dimension array'.format(axis, ndim))
+
+    # If array is 1-D and numpy version is > 1.9 numpy.unique will suffice
+    if all([ndim == 1,
+            int(np.__version__.split('.')[0]) >= 1,
+            int(np.__version__.split('.')[1]) >= 9]):
+        modals, counts = np.unique(ndarray, return_counts=True)
+        index = np.argmax(counts)
+        return modals[index], counts[index]
+
+    # Sort array
+    sort = np.sort(ndarray, axis=axis)
+    # Create array to transpose along the axis and get padding shape
+    transpose = np.roll(np.arange(ndim)[::-1], axis)
+    shape = list(sort.shape)
+    shape[axis] = 1
+    # Create a boolean array along strides of unique values
+    strides = np.concatenate([np.zeros(shape=shape, dtype='bool'),
+                                 np.diff(sort, axis=axis) == 0,
+                                 np.zeros(shape=shape, dtype='bool')],
+                                axis=axis).transpose(transpose).ravel()
+    # Count the stride lengths
+    counts = np.cumsum(strides)
+    counts[~strides] = np.concatenate([[0], np.diff(counts[~strides])])
+    counts[strides] = 0
+    # Get shape of padded counts and slice to return to the original shape
+    shape = np.array(sort.shape)
+    shape[axis] += 1
+    shape = shape[transpose]
+    slices = [slice(None)] * ndim
+    slices[axis] = slice(1, None)
+    # Reshape and compute final counts
+    counts = counts.reshape(shape).transpose(transpose)[slices] + 1
+
+    # Find maximum counts and return modals/counts
+    slices = [slice(None, i) for i in sort.shape]
+    del slices[axis]
+    index = np.ogrid[slices]
+    index.insert(axis, np.argmax(counts, axis=axis))
+    return sort[index], counts[index]
+
+
+
+
+
+
+
+
+def blur_x_patches(x_train, y_train, subpatch_size, k, std_blur, model):
+    '''
+    Faz o blur, em cada patch, em k subpaches. Preferencialmente naqueles que contêm pelo menos um pixel de estrada.
+    Caso não houver subpatches suficientes subpatches com pelos um pixel de estrada, então faz o blur naqueles que não 
+    tem estrada mesmo.
+
+    Parameters
+    ----------
+    x_train : TYPE
+        Numpy array (patches, height, width, channels).
+    y_train : TYPE
+        Numpy array (patches, height, width, channels).
+    subpatch_size : TYPE
+        Tamanho do subpatch
+    k : TYPE
+        Quantos subpatches aplica o blur.
+    std_blur : TYPE
+        Desvio Padrão do blur.
+
+    Returns
+    -------
+    x_train_blur : TYPE
+        x_train com blur aplicado.
+    pred_train_blur : TYPE
+        predições de x_train com blur aplicado.
+    '''
+    
+    # Tamanho do patch e número de canais dos patches e número de patches e Quantidade de pixels em um subpatch
+    patch_size = x_train.shape[1] # Patch Quadrado
+    n_channels = x_train.shape[-1]
+    n_patches = x_train.shape[0]
+    pixels_patch = patch_size*patch_size
+    pixels_subpatch = subpatch_size*subpatch_size
+
+    if k > pixels_patch//pixels_subpatch:
+        raise Exception('k é maior que o número total de subpatches com o tamanho subpatch_size. '
+                        'Diminua o tamanho do k ou diminua o tamanho do subpatch')
+        
+    # Variáveis para extração dos subpatches (tiles) a partir dos patches
+    sizes = [1, subpatch_size, subpatch_size, 1]
+    strides = [1, subpatch_size, subpatch_size, 1]
+    rates = [1, 1, 1, 1]
+    padding = 'VALID'
+    
+    # Extrai subpatches e faz o reshape para estar 
+    # na forma (patch, número total de subpatches, altura do subpatch, 
+    # largura do subpatch, número de canais do subpatch)
+    # Na forma como é extraído, o subpatch fica achatado na forma
+    # (patch, número vertical de subpatches, número horizontal de subpatches, número de pixels do subpatch achatado)
+    subpatches_x_train = tf.image.extract_patches(x_train, sizes=sizes, strides=strides, rates=rates, padding=padding).numpy()
+    n_vertical_subpatches = subpatches_x_train.shape[1]
+    n_horizontal_subpatches = subpatches_x_train.shape[2]
+    subpatches_x_train = subpatches_x_train.reshape((n_patches, n_vertical_subpatches*n_horizontal_subpatches, 
+                                                     subpatch_size, subpatch_size, n_channels))
+    
+    subpatches_y_train = tf.image.extract_patches(y_train, sizes=sizes, strides=strides, rates=rates, padding=padding).numpy()
+    subpatches_y_train = subpatches_y_train.reshape((n_patches, n_vertical_subpatches*n_horizontal_subpatches, 
+                                                     subpatch_size, subpatch_size, 1)) # Só um canal para referência
+    
+
+    
+    # Serão selecionados, preferencialmente, subpatches com número de pixels de estrada maior que pixels_corte
+    pixels_corte = 0
+
+    # Aplica blur nos respectivos subpatches    
+    for i_patch in range(len(subpatches_y_train)):
+        # Conta número de pixels de estrada em cada subpatch do presente patch
+        contagem_estrada = np.array([np.count_nonzero(subpatches_y_train[i_patch, i_subpatch] == 1) 
+                                     for i_subpatch in range(subpatches_y_train.shape[1])])
+        
+        # Array com índices dos subpatches que tem número de pixels de estrada maior que pixels_corte
+        indices_maior = np.where(contagem_estrada > pixels_corte)[0]
+        
+        # Sorteia k subpatches daqueles que são maiores que 0
+        try:
+            indices_selected_subpatches = random.sample(list(indices_maior), k)
+            indices_selected_subpatches.sort() # Coloca em ordem crescente
+        except ValueError:
+            # Se k for maior que o Número de subpatches que tem número de pixels de estrada maior que 0, 
+            # o que é o caso, teremos que adicionar subpatches
+            # que contém somente 0s
+            indices_subpatches = np.indices(contagem_estrada.shape)[0]
+            
+            len_indices_subpatches = len(indices_subpatches)
+                
+            len_indices_maior = len(indices_maior)
+                
+            diferenca_k_indices_maior = k - len_indices_maior
+            
+            indices_selected_subpatches_1 = random.sample(list(indices_maior), len_indices_maior)
+            indices_selected_subpatches_2 = random.sample(list(set(indices_subpatches) - set(indices_maior)), diferenca_k_indices_maior)
+            indices_selected_subpatches = indices_selected_subpatches_1 + indices_selected_subpatches_2
+            
+            indices_selected_subpatches.sort() # Coloca em ordem crescente
+            
+        # Cria array com subpatches escolhidos
+        selected_subpatches_x_train_i_patch = subpatches_x_train[i_patch][indices_selected_subpatches]
+        
+        # Aplica filtro aos subpatches 
+        selected_subpatches_x_train_i_patch_blurred = gaussian_filter(selected_subpatches_x_train_i_patch.astype(np.float32), sigma=(0, std_blur, std_blur, 0))
+        
+        # Substitui subpatches pelos respectivos subpatches com blur no array original de subpatches
+        subpatches_x_train[i_patch][indices_selected_subpatches] = selected_subpatches_x_train_i_patch_blurred
+        
+    
+    # Agora faz reconstituição dos patches originais, com o devido blur nos subpatches
+    # Coloca no formato aceito da função de reconstituição
+    subpatches_x_train_reshaped = subpatches_x_train.reshape((n_patches, n_vertical_subpatches, 
+                                                              n_horizontal_subpatches, 
+                                                              subpatch_size, subpatch_size, n_channels))
+    
+    x_train_blur, _ = patches_to_images_tf(patches=subpatches_x_train_reshaped, 
+                                                 image_shape=(patch_size, patch_size, n_channels), 
+                                                 overlap=0)
+    
+    x_train_blur = x_train_blur.numpy()
+    
+    # Make predictions
+    pred_train_blur, _ = Test_Step(model, x_train_blur)
+
+    # Retorna patches com blur e predições
+    return x_train_blur, pred_train_blur
