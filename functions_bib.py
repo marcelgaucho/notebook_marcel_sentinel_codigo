@@ -493,163 +493,71 @@ def get_batch_samples(x, y, batch, batch_size, data_augmentation, number_samples
     return x_batch, y_batch
 
 
-
-def train_unet(net, x_train, y_train, x_valid, y_valid, batch_size, epochs, early_stopping_epochs, early_stopping_delta, filepath, filename, data_augmentation=False, number_samples_for_generator=1, early_stopping=True, early_loss=True):
+def train_unet(net, x_train, y_train, x_valid, y_valid, batch_size, epochs, early_stopping_epochs, early_stopping_delta, filepath, 
+               filename, early_stopping=True, early_loss=False, metric_name='my_f1score'):
     print('Start the training...')
-
-    # calculating number of batches
-    train_batchs_qtd, valid_batchs_qtd = set_number_of_batches(x_train.shape[0], x_valid.shape[0], batch_size, data_augmentation, number_samples_for_generator)
-  
-    history_train = [] # Loss and measure of quality (accuracy, recall, etc) for each epoch will be stored on the list
-    history_valid = []
-    valid_loss_best_model = float('inf')
-    valid_metric_best_model = 1e-20
-    no_improvement_count = 0
-
-    for epoch in range(epochs):
-        print('Start epoch ... %d ' %(epoch) )
-        # shuffle train set in each epoch
-        #x_train, y_train = shuffle(x_train , y_train, random_state = 0)
-        x_train, y_train = shuffle(x_train , y_train)
-
-        # TRAINING
-        train_loss = np.zeros((1 , 2)) # Initialize array that will be used to store the pair (loss, measure of quality)
-        # mini batches strategy (iterate through batches)
-        for  batch in range(train_batchs_qtd):
-            print('Start batch ... %d ' %(batch) )
-            x_train_batch, y_train_batch = get_batch_samples(x_train, y_train, batch, batch_size, data_augmentation, number_samples_for_generator) # Pega slice do array referente ao batch sendo treinado
-            train_loss = train_loss + net.train_on_batch(x_train_batch, y_train_batch) # Accumulate loss and measure of quality
-            
-
-        # Estimating the loss and measure of quality in the training set
-        # Divide total loss and measure of quality by the number of batches (average)
-        train_loss = train_loss/train_batchs_qtd
-
-        # VALIDATING
-        # shuffle valid set in each epoch
-        #x_valid, y_valid = shuffle(x_valid , y_valid, random_state = 0)
-        x_valid, y_valid = shuffle(x_valid , y_valid)
-        
-        valid_loss = np.zeros((1 , 2))
-        # Evaluating the network (model) with the validation set
-        for  batch in range(valid_batchs_qtd):
-            x_valid_batch, y_valid_batch = get_batch_samples(x_valid, y_valid, batch, batch_size, data_augmentation, number_samples_for_generator)
-            valid_loss = valid_loss + net.test_on_batch(x_valid_batch, y_valid_batch)
-            
-
-        # Estimating the loss in the validation set
-        valid_loss = valid_loss/valid_batchs_qtd
-
-        # Showing the results (Loss and accuracy)
-        print("%d [training loss: %f , Train %s: %.2f%%][Test loss: %f , Test %s:%.2f%%]" %(epoch , train_loss[0 , 0], net.metrics_names[1], 100*train_loss[0 , 1] , 
-                                                                                              valid_loss[0 , 0] , net.metrics_names[1], 100 * valid_loss[0 , 1]))
-        
-        history_train.append( train_loss )
-        history_valid.append( valid_loss )
-
-        print(history_train)
-        print(history_valid)
-
-        # Early Stopping
-        # valid_loss[0 , 0]/valid_loss_best_model  
-        # is the fraction of loss of the current epoch compared with 
-        # the last best epoch.
-        # If this number is near to 1 or even larger than 1,
-        # then 1 minus this value will be near to 0
-        # or even negative. In resume, it will be less
-        # than early_stopping_delta
-        
-        if early_stopping:
-            # Early Stopping on Loss 
-            if early_loss:
-                # Se valor absoluto da fração de incremento (ou decremento) for abaixo de early_stopping_delta,
-                # então segue para contagem do Early Stopping
-                fraction = 1-(valid_loss[0 , 0]/valid_loss_best_model)
-                if abs(fraction) < early_stopping_delta:
-                    # Stop if there are no improvement along early_stopping_epochs  
-                    # This means, the situation above described persists for
-                    # early_stopping_epochs
-                    print('Early Stopping Count Increasing to: %d' % (no_improvement_count+1))
-                    if no_improvement_count+1 >= early_stopping_epochs:
-                        print('Early Stopping reached')
-                        break
-                    else:
-                        no_improvement_count = no_improvement_count+1
-                        
-                # Perda aumentando, pois loss/loss_best_model é maior que 1
-                # Também segue para contagem do Early Stopping
-                elif fraction < 0:
-                    # Stop if there are no improvement along early_stopping_epochs  
-                    # This means, the situation above described persists for
-                    # early_stopping_epochs
-                    print('Early Stopping Count Increasing to: %d' % (no_improvement_count+1))
-                    if no_improvement_count+1 >= early_stopping_epochs:
-                        print('Early Stopping reached')
-                        break
-                    else:
-                        no_improvement_count = no_improvement_count+1
     
-                # Perda diminuindo, pois loss/loss_best_model é menor que 1
-                # Nesse caso salva o modelo e atualiza o valor de perda do melhor modelo
-                else:
-                    valid_loss_best_model = valid_loss[0 , 0]
-                    no_improvement_count = 0
-        
-                    # Saving best model  
-                    print("Saving the model...")
-                    net.save(filepath+filename+'.h5')
-                    
-            # Similar thing on metric
-            else:
-                # Se valor absoluto da fração de incremento (ou decremento) for abaixo de early_stopping_delta,
-                # então segue para contagem do Early Stopping
-                # Aqui, em fraction, a diferença é ao contrário, pois queremos que uma fração positiva aumente a métrica (o que é considerado bom)
-                fraction = (valid_loss[0 , 1]/valid_metric_best_model)-1
-                if abs(fraction) < early_stopping_delta:
-                    # Stop if there are no improvement along early_stopping_epochs  
-                    # This means, the situation above described persists for
-                    # early_stopping_epochs
-                    print('Early Stopping Count Increasing to: %d' % (no_improvement_count+1))
-                    if no_improvement_count+1 >= early_stopping_epochs:
-                        print('Early Stopping reached')
-                        break
-                    else:
-                        no_improvement_count = no_improvement_count+1
-                        
-                # Métrica diminuindo, pois loss/loss_best_model é menor que 1
-                # Como isso normalmente é ruim, também segue para contagem do Early Stopping
-                elif fraction < 0:
-                    # Stop if there are no improvement along early_stopping_epochs  
-                    # This means, the situation above described persists for
-                    # early_stopping_epochs
-                    print('Early Stopping Count Increasing to: %d' % (no_improvement_count+1))
-                    if no_improvement_count+1 >= early_stopping_epochs:
-                        print('Early Stopping reached')
-                        break
-                    else:
-                        no_improvement_count = no_improvement_count+1
-                        
-                # Métrica aumentando, pois loss/loss_best_model é maior que 1
-                # Normalmente é uma coisa positiva, como por exemplo acurácia, precisão, recall aumentando.
-                # Então salvamos o modelo
-                else:
-                    valid_loss_best_model = valid_loss[0 , 1]
-                    no_improvement_count = 0
-        
-                    # Saving best model  
-                    print("Saving the model...")
-                    net.save(filepath+filename+'.h5')
-                    
+    early_stop = None
+    
+    # Com Early Stopping
+    if early_stopping:
+        # Early Stopping por Loss
+        if early_loss:
+            early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=early_stopping_epochs, mode='min', restore_best_weights=True)
+            
+            cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=filepath+filename+'.h5',
+                                                             monitor='val_loss',
+                                                             mode='min',
+                                                             save_weights_only=False,
+                                                             verbose=1,
+                                                             save_freq='epoch',
+                                                             save_best_only=True)
+            
+        # Early Stopping por Métrica
         else:
-            # Saving best model  
-            print("Saving the model...")
-            net.save(filepath+filename+'.h5')
-                
-    # Return a list of 2 lists
-    # The first is the list with the train loss and accuracy
-    # The second is the list with the validation loss and accuracy
-    return [ history_train, history_valid ]
-
+            early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_'+metric_name, patience=early_stopping_epochs, mode='max', restore_best_weights=True)
+            
+            cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=filepath+filename+'.h5',
+                                                             monitor='val_'+metric_name,
+                                                             mode='max',
+                                                             save_weights_only=False,
+                                                             verbose=1,
+                                                             save_freq='epoch',
+                                                             save_best_only=True)
+    
+    # Sem Early Stopping salva apenas o último modelo
+    else:
+        cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=filepath+filename+'.h5', 
+                                                         monitor='val_loss',
+                                                         mode='auto',
+                                                         save_weights_only=False,
+                                                         verbose=1,
+                                                         save_freq='epoch',
+                                                         save_best_only=False)
+    
+    # Constroi lista de callbacks
+    if early_stop:
+        callbacks = [early_stop, cp_callback]
+    else:
+        callbacks = [cp_callback]
+        
+    # Treina Modelo
+    history = net.fit(x_train, y_train, batch_size=batch_size, epochs=epochs, verbose='auto',
+                      callbacks=callbacks, validation_data=(x_valid, y_valid))
+    
+    # Retorna resultados de Treino e Validação
+    historia = history.history
+    
+    lista_loss = historia['loss']
+    lista_f1score = historia['my_f1score']
+    lista_val_loss = historia['val_loss']
+    lista_val_f1score = historia['val_my_f1score']
+    
+    history_train = [np.array([dupla]) for dupla in zip(lista_loss, lista_f1score)]
+    history_valid = [np.array([dupla]) for dupla in zip(lista_val_loss, lista_val_f1score)]
+    resultado = [ history_train, history_valid ]
+    
+    return resultado
 
 
 def compute_relaxed_metrics(y: np.ndarray, pred: np.ndarray, buffer_y: np.ndarray, buffer_pred: np.ndarray,
@@ -1500,7 +1408,8 @@ def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet', e
     
     # Treina o modelo
     history = train_unet(model, x_train, y_train, x_valid, y_valid, batch_size, epochs, early_stopping_epochs, early_stopping_delta, 
-                         output_dir, best_model_filename, data_augmentation, early_stopping=early_stopping, early_loss=early_loss)
+                         output_dir, best_model_filename, early_stopping=early_stopping, early_loss=early_loss, 
+                         metric_name=metric.__name__)
 
     # Imprime e salva história do treinamento
     print('history = \n', history)
@@ -2736,15 +2645,23 @@ def blur_x_patches(x_train, y_train, subpatch_size, k, std_blur, model):
     
     # Agora faz reconstituição dos patches originais, com o devido blur nos subpatches
     # Coloca no formato aceito da função de reconstituição
-    subpatches_x_train_reshaped = subpatches_x_train.reshape((n_patches, n_vertical_subpatches, 
-                                                              n_horizontal_subpatches, 
-                                                              subpatch_size, subpatch_size, n_channels))
+    x_train_blur = np.zeros(x_train.shape, dtype=np.float16)
     
-    x_train_blur, _ = patches_to_images_tf(patches=subpatches_x_train_reshaped, 
-                                                 image_shape=(patch_size, patch_size, n_channels), 
-                                                 overlap=0)
+    for i_patch in range(len(subpatches_x_train)):
+        # Pega subpatches do patch
+        sub = subpatches_x_train[i_patch]
     
-    x_train_blur = x_train_blur.numpy()
+        # Divide em linhas    
+        rows = np.split(sub, patch_size//subpatch_size, axis=0)
+        
+        # Concatena linhas
+        rows = [tf.concat(tf.unstack(x), axis=1).numpy() for x in rows]
+        
+        # Reconstroi
+        reconstructed = (tf.concat(rows, axis=0)).numpy()
+        
+        # Atribui
+        x_train_blur[i_patch] = reconstructed
     
     # Make predictions
     pred_train_blur, _ = Test_Step(model, x_train_blur)
