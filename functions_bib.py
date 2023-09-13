@@ -13,11 +13,15 @@ import math
 import tensorflow as tf
 import pickle
 import random
+import time
+import datetime
+import types
 
 from tensorflow.keras.layers import Input, concatenate, Conv2D, BatchNormalization, Activation 
 from tensorflow.keras.layers import MaxPool2D, Conv2DTranspose, UpSampling2D, Concatenate
 from tensorflow.keras.layers import Dropout, Add
 from tensorflow.keras.models import Model, load_model
+from tensorflow.keras.utils import to_categorical
 
 from sklearn.utils import shuffle
 
@@ -316,12 +320,16 @@ def build_model_unet(input_shape, n_classes):
 
 
 
-def resnet_block_chamorro(x, n_filter, ind):
+def resnet_block_chamorro(x, n_filter, ind, dropout=True, dropout_rate=0.2):
     x_init = x
 
     ## Conv 1
     x = Conv2D(n_filter, (3, 3), activation='relu', padding="same", name = 'res1_net'+str(ind))(x)
-    x = Dropout(0.5, name = 'drop_net'+str(ind))(x)
+    if dropout:
+        x = Dropout(dropout_rate, name = 'drop_net'+str(ind))(x)
+        print(f'ATENÇÃO DROPOUT RATE = {dropout_rate}')
+    else:
+        pass
     ## Conv 2
     x = Conv2D(n_filter, (3, 3), activation='relu', padding="same", name = 'res2_net'+str(ind))(x)
     
@@ -331,6 +339,9 @@ def resnet_block_chamorro(x, n_filter, ind):
     ## Add
     x = Add()([x, s])
     return x
+
+
+
 
 
 
@@ -371,6 +382,59 @@ def build_resunet_chamorro(input_shape, nb_filters, n_classes, last_activation='
     output = Conv2D(n_classes,(1,1), activation = last_activation, padding = 'same', name = 'output')(merged1)
                                                                                                            
     return Model(input_layer, output)
+
+"""
+# Residual U-Net model para Pós-Processamento
+def build_resunet_chamorro_semdropout(input_shape, nb_filters, n_classes, last_activation='softmax'):
+    '''Base network to be shared (eq. to feature extraction)'''
+    input_layer= Input(shape = input_shape, name="input_enc_net")
+    
+    res_block1 = resnet_block_chamorro(input_layer, nb_filters[0], 1, dropout=False)
+    pool1 = MaxPool2D((2 , 2), name='pool_net1')(res_block1)
+    
+    res_block2 = resnet_block_chamorro(pool1, nb_filters[1], 2, dropout=False) 
+    pool2 = MaxPool2D((2 , 2), name='pool_net2')(res_block2)
+    
+    upsample2 = Conv2D(nb_filters[1], (3 , 3), activation = 'relu', padding = 'same', 
+                       name = 'upsampling_net2')(UpSampling2D(size = (2,2))(pool2))
+                                                 
+    merged2 = concatenate([res_block2, upsample2], name='concatenate2')
+                                                                                          
+    upsample1 = Conv2D(nb_filters[0], (3 , 3), activation = 'relu', padding = 'same', 
+                       name = 'upsampling_net1')(UpSampling2D(size = (2,2))(merged2))
+    merged1 = concatenate([res_block1, upsample1], name='concatenate1')
+
+    output = Conv2D(n_classes,(1,1), activation = last_activation, padding = 'same', name = 'output')(merged1)
+                                                                                                           
+    return Model(input_layer, output)
+"""
+
+# Residual U-Net model para Pós-Processamento
+def build_resunet_chamorro_semdropout(input_shape, nb_filters, n_classes, last_activation='softmax'):
+    '''Base network to be shared (eq. to feature extraction)'''
+    input_layer= Input(shape = input_shape, name="input_enc_net")
+    
+    res_block1 = resnet_block_chamorro(input_layer, nb_filters[0], 1, dropout=False)
+    pool1 = MaxPool2D((2 , 2), name='pool_net1')(res_block1)
+    
+    res_block2 = resnet_block_chamorro(pool1, nb_filters[1], 2, dropout=False) 
+    pool2 = MaxPool2D((2 , 2), name='pool_net2')(res_block2)
+    
+    res_block3 = resnet_block_chamorro(pool2, nb_filters[2], 3, dropout=False)
+    
+    upsample2 = Conv2D(nb_filters[1], (3 , 3), activation = 'relu', padding = 'same', 
+                       name = 'upsampling_net2')(UpSampling2D(size = (2,2))(res_block3))
+                                                 
+    merged2 = concatenate([res_block2, upsample2], name='concatenate2')
+                                                                                          
+    upsample1 = Conv2D(nb_filters[0], (3 , 3), activation = 'relu', padding = 'same', 
+                       name = 'upsampling_net1')(UpSampling2D(size = (2,2))(merged2))
+    merged1 = concatenate([res_block1, upsample1], name='concatenate1')
+
+    output = Conv2D(n_classes,(1,1), activation = last_activation, padding = 'same', name = 'output')(merged1)
+                                                                                                           
+    return Model(input_layer, output)
+
 
 
 # Model CorrED
@@ -444,10 +508,13 @@ def build_model(input_shape, n_classes, model_type='unet'):
         return build_resunet_chamorro(input_shape, (64, 128, 256), n_classes)
     
     elif model_type == 'corred':
-        return build_model_corred(input_shape, n_classes)        
+        return build_model_corred(input_shape, n_classes)
+
+    elif model_type == 'resunet chamorro pos':
+         return build_resunet_chamorro_semdropout(input_shape, (16, 32, 64), n_classes)
     
     else:
-        raise Exception("Model options are 'unet' and 'resunet' and 'resunet chamorro' and 'corred' ")
+        raise Exception("Model options are 'unet' and 'resunet' and 'resunet chamorro' and 'corred' and 'resunet chamorro pos' ")
         
 
 
@@ -498,36 +565,43 @@ def train_unet(net, x_train, y_train, x_valid, y_valid, batch_size, epochs, earl
     print('Start the training...')
     
     early_stop = None
+    filepath_name = os.path.join(filepath, filename+'.h5')
+    log_dir = os.path.join(filepath, 'logs', 'fit') #, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+    shutil.rmtree(log_dir)
+    tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir)
+
     
     # Com Early Stopping
     if early_stopping:
         # Early Stopping por Loss
         if early_loss:
-            early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=early_stopping_epochs, mode='min', restore_best_weights=True)
+            early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=early_stopping_epochs, mode='min', restore_best_weights=True,
+                                                          min_delta=early_stopping_delta, verbose=1)
             
-            cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=filepath+filename+'.h5',
-                                                             monitor='val_loss',
-                                                             mode='min',
-                                                             save_weights_only=False,
-                                                             verbose=1,
-                                                             save_freq='epoch',
-                                                             save_best_only=True)
+            cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=filepath_name,
+                                                              monitor='val_loss',
+                                                              mode='min',
+                                                              save_weights_only=False,
+                                                              verbose=1,
+                                                              save_freq='epoch',
+                                                              save_best_only=True)
             
         # Early Stopping por Métrica
         else:
-            early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_'+metric_name, patience=early_stopping_epochs, mode='max', restore_best_weights=True)
+            early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_'+metric_name, patience=early_stopping_epochs, mode='max', restore_best_weights=True,
+                                                          min_delta=early_stopping_delta, verbose=1)
             
-            cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=filepath+filename+'.h5',
-                                                             monitor='val_'+metric_name,
-                                                             mode='max',
-                                                             save_weights_only=False,
-                                                             verbose=1,
-                                                             save_freq='epoch',
-                                                             save_best_only=True)
+            cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=filepath_name,
+                                                              monitor='val_'+metric_name,
+                                                              mode='max',
+                                                              save_weights_only=False,
+                                                              verbose=1,
+                                                              save_freq='epoch',
+                                                              save_best_only=True)
     
     # Sem Early Stopping salva apenas o último modelo
     else:
-        cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=filepath+filename+'.h5', 
+        cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=filepath_name, 
                                                          monitor='val_loss',
                                                          mode='auto',
                                                          save_weights_only=False,
@@ -537,9 +611,9 @@ def train_unet(net, x_train, y_train, x_valid, y_valid, batch_size, epochs, earl
     
     # Constroi lista de callbacks
     if early_stop:
-        callbacks = [early_stop, cp_callback]
+        callbacks = [early_stop, cp_callback, tensorboard_callback]
     else:
-        callbacks = [cp_callback]
+        callbacks = [cp_callback, tensorboard_callback]
         
     # Treina Modelo
     history = net.fit(x_train, y_train, batch_size=batch_size, epochs=epochs, verbose='auto',
@@ -1311,7 +1385,7 @@ def my_f1score(y_true, y_pred):
 
 # Função para treinar o modelo conforme os dados (arrays numpy) em uma pasta de entrada, salvando o modelo e o 
 # histórico na pasta de saída
-def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet', epochs=150, early_stopping=True, 
+def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet chamorro', epochs=150, early_stopping=True, 
                   early_loss=True, loss='focal', gamma=2, metric=my_f1score, best_model_filename = 'best_model'):
     '''
     
@@ -1333,6 +1407,8 @@ def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet', e
     None.
 
     '''
+    # Marca tempo total do treinamento. Começa Contagem
+    start = time.time()
     
     # Lê arrays salvos
     '''
@@ -1348,6 +1424,10 @@ def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet', e
     x_valid = np.load(input_dir + 'x_valid.npy')
     y_train = np.load(input_dir + 'y_train.npy')
     y_valid = np.load(input_dir + 'y_valid.npy')
+    
+    # Faz codificação One-Hot dos Ys
+    y_train = to_categorical(y_train, num_classes=2, dtype='uint8')
+    y_valid = to_categorical(y_valid, num_classes=2, dtype='uint8')
     
     print('Shape dos arrays:')
     print('Shape x_train: ', x_train.shape)
@@ -1367,25 +1447,30 @@ def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet', e
     
 
     # Definição dos hiperparâmetros
-    batch_size = 8
+    batch_size = 32
+    learning_rate = 0.01
     epochs = epochs
 
     # Parâmetros do Early Stopping
     early_stopping = early_stopping
     early_stopping_epochs = 50
-    early_stopping_delta = 0.0001 # aumento delta (percentual de diminuição da perda) equivalente a 0.01%
+    #early_stopping_epochs = 2
+    #early_stopping_delta = 0.001 # aumento delta (percentual de diminuição da perda) equivalente a 0.01%
+    early_stopping_delta = 0.001 # aumento delta (percentual de diminuição da perda) equivalente a 0.01%
+
     
     # Sem Data Augmentation (Ele é feito direto no conjunto de treinamento)
     data_augmentation = False
     
     # Otimizador
-    adam = Adam(learning_rate = 0.0001 , beta_1=0.9)
+    adam = Adam(learning_rate = learning_rate , beta_1=0.9)
     
     # Compila o modelo
     if loss == 'focal':
         model.compile(loss = SparseCategoricalFocalLoss(gamma=gamma), optimizer=adam , metrics=[metric])
     elif loss == 'cross':
-        model.compile(loss = 'sparse_categorical_crossentropy', optimizer=adam, metrics=[metric])
+        #model.compile(loss = 'sparse_categorical_crossentropy', optimizer=adam, metrics=[metric])
+        model.compile(loss = 'categorical_crossentropy', optimizer=adam, metrics=[metric])
 
     print('Hiperparâmetros:')
     print('Modelo:', model_type)
@@ -1395,7 +1480,7 @@ def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet', e
     print('Early Stopping Epochs:', early_stopping_epochs)
     print('Early Stopping Delta:', early_stopping_delta)
     print('Otimizador:', 'Adam')
-    print('Learning Rate:', 0.0001)
+    print('Learning Rate:', learning_rate)
     print('Beta 1:', 0.9)
     print('Função de Perda:', loss)
     print('Gamma para Focal Loss:', gamma)
@@ -1406,20 +1491,51 @@ def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet', e
     # Nome do modelo a ser salvo
     best_model_filename = best_model_filename
     
+    # Transforma dados para tensores dentro da CPU
+    with tf.device('/CPU:0'):
+        x_train = tf.convert_to_tensor(x_train)
+        y_train = tf.convert_to_tensor(y_train)
+        x_valid = tf.convert_to_tensor(x_valid)
+        y_valid = tf.convert_to_tensor(y_valid)
+    
     # Treina o modelo
-    history = train_unet(model, x_train, y_train, x_valid, y_valid, batch_size, epochs, early_stopping_epochs, early_stopping_delta, 
+    # Testa se a métrica é string
+    if isinstance(metric, str):
+        history = train_unet(model, x_train, y_train, x_valid, y_valid, batch_size, epochs, early_stopping_epochs, early_stopping_delta, 
+                     output_dir, best_model_filename, early_stopping=early_stopping, early_loss=early_loss, 
+                     metric_name=metric)
+    
+    # Testa se é instância
+    elif isinstance(metric, object):
+        history = train_unet(model, x_train, y_train, x_valid, y_valid, batch_size, epochs, early_stopping_epochs, early_stopping_delta, 
+                         output_dir, best_model_filename, early_stopping=early_stopping, early_loss=early_loss, 
+                         metric_name=metric.__class__.__name__.lower())
+        
+    # Testa se é função
+    elif isinstance(metric, (types.FunctionType, types.BuiltinFunctionType)):
+        history = train_unet(model, x_train, y_train, x_valid, y_valid, batch_size, epochs, early_stopping_epochs, early_stopping_delta, 
                          output_dir, best_model_filename, early_stopping=early_stopping, early_loss=early_loss, 
                          metric_name=metric.__name__)
+
+        
 
     # Imprime e salva história do treinamento
     print('history = \n', history)
     
-    with open(output_dir + 'history_' + best_model_filename + '.txt', 'w') as f:
+    # Marca tempo total do treinamento. Encerra Contagem
+    end = time.time()
+    
+    # Salva histórico e inclui no arquivo texto a contagem de tempo gasto
+    with open(os.path.join(output_dir, 'history_' + best_model_filename + '.txt'), 'w') as f:
         f.write('history = \n')
         f.write(str(history))
+        f.write(f'Tempo total gasto no treinamento foi de {end-start} segundos')
         
-    with open(output_dir + 'history_pickle_' +  best_model_filename + '.pickle', "wb") as fp: # Salva histórico (lista Python) para recuperar depois
+    with open(os.path.join(output_dir, 'history_pickle_' +  best_model_filename + '.pickle'), "wb") as fp: # Salva histórico (lista Python) para recuperar depois
         pickle.dump(history, fp)
+        
+    
+    
         
 
 
@@ -1687,30 +1803,30 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
     
     for dist in dist_buffers:
         # Buffers para Precisão Relaxada
-        if not os.path.exists(os.path.join(input_dir, f'buffer_y_train_{dist}m.npy')): 
+        if not os.path.exists(os.path.join(input_dir, f'buffer_y_train_{dist}px.npy')): 
             buffers_y_train[dist] = buffer_patches(y_train, dist_cells=dist)
-            np.save(input_dir + f'buffer_y_train_{dist}m.npy', buffers_y_train[dist])
+            np.save(input_dir + f'buffer_y_train_{dist}px.npy', buffers_y_train[dist])
             
-        if not os.path.exists(os.path.join(input_dir, f'buffer_y_valid_{dist}m.npy')): 
+        if not os.path.exists(os.path.join(input_dir, f'buffer_y_valid_{dist}px.npy')): 
             buffers_y_valid[dist] = buffer_patches(y_valid, dist_cells=dist)
-            np.save(input_dir + f'buffer_y_valid_{dist}m.npy', buffers_y_valid[dist])
+            np.save(input_dir + f'buffer_y_valid_{dist}px.npy', buffers_y_valid[dist])
         
         # Buffers para Sensibilidade Relaxada
-        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_train_{dist}m.npy')):
+        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_train_{dist}px.npy')):
             buffers_pred_train[dist] = buffer_patches(pred_train, dist_cells=dist)
-            np.save(output_dir + f'buffer_pred_train_{dist}m.npy', buffers_pred_train[dist])
+            np.save(output_dir + f'buffer_pred_train_{dist}px.npy', buffers_pred_train[dist])
             
-        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_valid_{dist}m.npy')): 
+        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_valid_{dist}px.npy')): 
             buffers_pred_valid[dist] = buffer_patches(pred_valid, dist_cells=dist)
-            np.save(output_dir + f'buffer_pred_valid_{dist}m.npy', buffers_pred_valid[dist])
+            np.save(output_dir + f'buffer_pred_valid_{dist}px.npy', buffers_pred_valid[dist])
     
     
     # Lê buffers de arrays de predição do Treinamento e Validação
     for dist in dist_buffers:
-        buffers_y_train[dist] = np.load(input_dir + f'buffer_y_train_{dist}m.npy')
-        buffers_y_valid[dist] = np.load(input_dir + f'buffer_y_valid_{dist}m.npy')
-        buffers_pred_train[dist] = np.load(output_dir + f'buffer_pred_train_{dist}m.npy')
-        buffers_pred_valid[dist] = np.load(output_dir + f'buffer_pred_valid_{dist}m.npy')
+        buffers_y_train[dist] = np.load(input_dir + f'buffer_y_train_{dist}px.npy')
+        buffers_y_valid[dist] = np.load(input_dir + f'buffer_y_valid_{dist}px.npy')
+        buffers_pred_train[dist] = np.load(output_dir + f'buffer_pred_train_{dist}px.npy')
+        buffers_pred_valid[dist] = np.load(output_dir + f'buffer_pred_valid_{dist}px.npy')
         
         
     # Relaxed Metrics for training
@@ -1719,7 +1835,7 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
     
     
     for dist in dist_buffers:
-        with open(output_dir + f'relaxed_metrics_{dist}m.txt', 'a') as f:
+        with open(output_dir + f'relaxed_metrics_{dist}px.txt', 'a') as f:
             relaxed_precision_train[dist], relaxed_recall_train[dist], relaxed_f1score_train[dist] = compute_relaxed_metrics(y_train, 
                                                                                                        pred_train, buffers_y_train[dist],
                                                                                                        buffers_pred_train[dist], 
@@ -1797,20 +1913,20 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
     
     for dist in dist_buffers:
         # Buffer para Precisão Relaxada
-        if not os.path.exists(os.path.join(input_dir, f'buffer_y_test_{dist}m.npy')):
+        if not os.path.exists(os.path.join(input_dir, f'buffer_y_test_{dist}px.npy')):
             buffers_y_test[dist] = buffer_patches(y_test, dist_cells=dist)
-            np.save(input_dir + f'buffer_y_test_{dist}m.npy', buffers_y_test[dist])
+            np.save(input_dir + f'buffer_y_test_{dist}px.npy', buffers_y_test[dist])
             
         # Buffer para Sensibilidade Relaxada
-        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_test_{dist}m.npy')):
+        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_test_{dist}px.npy')):
             buffers_pred_test[dist] = buffer_patches(pred_test, dist_cells=dist)
-            np.save(output_dir + f'buffer_pred_test_{dist}m.npy', buffers_pred_test[dist])
+            np.save(output_dir + f'buffer_pred_test_{dist}px.npy', buffers_pred_test[dist])
             
             
     # Lê buffers de arrays de predição do Teste
     for dist in dist_buffers:
-        buffers_y_test[dist] = np.load(input_dir + f'buffer_y_test_{dist}m.npy')
-        buffers_pred_test[dist] = np.load(output_dir + f'buffer_pred_test_{dist}m.npy')
+        buffers_y_test[dist] = np.load(input_dir + f'buffer_y_test_{dist}px.npy')
+        buffers_pred_test[dist] = np.load(output_dir + f'buffer_pred_test_{dist}px.npy')
         
         
     # Relaxed Metrics for test
@@ -1818,7 +1934,7 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
     
     
     for dist in dist_buffers:
-        with open(output_dir + f'relaxed_metrics_{dist}m.txt', 'a') as f:
+        with open(output_dir + f'relaxed_metrics_{dist}px.txt', 'a') as f:
             relaxed_precision_test[dist], relaxed_recall_test[dist], relaxed_f1score_test[dist] = compute_relaxed_metrics(y_test, 
                                                                                                        pred_test, buffers_y_test[dist],
                                                                                                        buffers_pred_test[dist], 
@@ -1863,20 +1979,20 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
     
     for dist in dist_buffers:
         # Buffer dos Mosaicos de Referência
-        if not os.path.exists(os.path.join(input_dir, f'buffers_y_mosaics_{dist}m.npy')):
+        if not os.path.exists(os.path.join(input_dir, f'buffers_y_mosaics_{dist}px.npy')):
             buffers_y_mosaics[dist] = buffer_patches(y_mosaics, dist_cells=dist)
-            np.save(input_dir + f'buffer_y_mosaics_{dist}m.npy', buffers_y_mosaics[dist])
+            np.save(input_dir + f'buffer_y_mosaics_{dist}px.npy', buffers_y_mosaics[dist])
             
         # Buffer dos Mosaicos de Predição   
-        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_mosaics_{dist}m.npy')):
+        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_mosaics_{dist}px.npy')):
             buffers_pred_mosaics[dist] = buffer_patches(pred_mosaics, dist_cells=dist)
-            np.save(output_dir + f'buffer_pred_mosaics_{dist}m.npy', buffers_pred_mosaics[dist])
+            np.save(output_dir + f'buffer_pred_mosaics_{dist}px.npy', buffers_pred_mosaics[dist])
     
     
     # Lê buffers de Mosaicos
     for dist in dist_buffers:
-        buffers_y_mosaics[dist] = np.load(input_dir + f'buffer_y_mosaics_{dist}m.npy')
-        buffers_pred_mosaics[dist] = np.load(output_dir + f'buffer_pred_mosaics_{dist}m.npy')  
+        buffers_y_mosaics[dist] = np.load(input_dir + f'buffer_y_mosaics_{dist}px.npy')
+        buffers_pred_mosaics[dist] = np.load(output_dir + f'buffer_pred_mosaics_{dist}px.npy')  
         
         
     # Avaliação da Qualidade para os Mosaicos de Teste
@@ -1884,7 +2000,7 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
     relaxed_precision_mosaics, relaxed_recall_mosaics, relaxed_f1score_mosaics = {}, {}, {}
       
     for dist in dist_buffers:
-        with open(output_dir + f'relaxed_metrics_{dist}m.txt', 'a') as f:
+        with open(output_dir + f'relaxed_metrics_{dist}px.txt', 'a') as f:
             relaxed_precision_mosaics[dist], relaxed_recall_mosaics[dist], relaxed_f1score_mosaics[dist] = compute_relaxed_metrics(y_mosaics, 
                                                                                                        pred_mosaics, buffers_y_mosaics[dist],
                                                                                                        buffers_pred_mosaics[dist], 
@@ -1989,8 +2105,8 @@ def avalia_modelo_ensemble(input_dir: str, output_dir: str, metric_name = 'F1-Sc
     # Calcula e salva predição a partir da probabilidade média do ensemble
     if not os.path.exists(os.path.join(output_dir, 'pred_train.npy')) or \
        not os.path.exists(os.path.join(output_dir, 'pred_valid.npy')):
-        pred_train = calcula_pred_from_prob_ensemble(prob_train_ensemble)
-        pred_valid = calcula_pred_from_prob_ensemble(prob_valid_ensemble)
+        pred_train = calcula_pred_from_prob_ensemble_mean(prob_train_ensemble)
+        pred_valid = calcula_pred_from_prob_ensemble_mean(prob_valid_ensemble)
         
         pred_train = pred_train.astype(np.uint8)
         pred_valid = pred_valid.astype(np.uint8)
@@ -2029,8 +2145,8 @@ def avalia_modelo_ensemble(input_dir: str, output_dir: str, metric_name = 'F1-Sc
             x_valid_blur = gaussian_filter(x_valid.astype(np.float32), sigma=(0 ,std_blur, std_blur, 0)).astype(np.float16)
             _, prob_train_ensemble_blur = Test_Step_Ensemble(model, x_train_blur, 2)
             _, prob_valid_ensemble_blur = Test_Step_Ensemble(model, x_valid_blur, 2)
-            pred_train_blur = calcula_pred_from_prob_ensemble(prob_train_ensemble_blur)
-            pred_valid_blur = calcula_pred_from_prob_ensemble(prob_valid_ensemble_blur)
+            pred_train_blur = calcula_pred_from_prob_ensemble_mean(prob_train_ensemble_blur)
+            pred_valid_blur = calcula_pred_from_prob_ensemble_mean(prob_valid_ensemble_blur)
             x_train_new = np.concatenate((x_train_blur, pred_train_blur), axis=-1).astype(np.float16)
             x_valid_new = np.concatenate((x_valid_blur, pred_valid_blur), axis=-1).astype(np.float16)
             salva_arrays(output_dir, x_train=x_train_new, x_valid=x_valid_new)
@@ -2052,30 +2168,30 @@ def avalia_modelo_ensemble(input_dir: str, output_dir: str, metric_name = 'F1-Sc
     
     for dist in dist_buffers:
         # Buffers para Precisão Relaxada
-        if not os.path.exists(os.path.join(input_dir, f'buffer_y_train_{dist}m.npy')): 
+        if not os.path.exists(os.path.join(input_dir, f'buffer_y_train_{dist}px.npy')): 
             buffers_y_train[dist] = buffer_patches(y_train, dist_cells=dist)
-            np.save(input_dir + f'buffer_y_train_{dist}m.npy', buffers_y_train[dist])
+            np.save(input_dir + f'buffer_y_train_{dist}px.npy', buffers_y_train[dist])
             
-        if not os.path.exists(os.path.join(input_dir, f'buffer_y_valid_{dist}m.npy')): 
+        if not os.path.exists(os.path.join(input_dir, f'buffer_y_valid_{dist}px.npy')): 
             buffers_y_valid[dist] = buffer_patches(y_valid, dist_cells=dist)
-            np.save(input_dir + f'buffer_y_valid_{dist}m.npy', buffers_y_valid[dist])
+            np.save(input_dir + f'buffer_y_valid_{dist}px.npy', buffers_y_valid[dist])
         
         # Buffers para Sensibilidade Relaxada
-        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_train_{dist}m.npy')):
+        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_train_{dist}px.npy')):
             buffers_pred_train[dist] = buffer_patches(pred_train, dist_cells=dist)
-            np.save(output_dir + f'buffer_pred_train_{dist}m.npy', buffers_pred_train[dist])
+            np.save(output_dir + f'buffer_pred_train_{dist}px.npy', buffers_pred_train[dist])
             
-        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_valid_{dist}m.npy')): 
+        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_valid_{dist}px.npy')): 
             buffers_pred_valid[dist] = buffer_patches(pred_valid, dist_cells=dist)
-            np.save(output_dir + f'buffer_pred_valid_{dist}m.npy', buffers_pred_valid[dist])
+            np.save(output_dir + f'buffer_pred_valid_{dist}px.npy', buffers_pred_valid[dist])
     
     
     # Lê buffers de arrays de predição do Treinamento e Validação
     for dist in dist_buffers:
-        buffers_y_train[dist] = np.load(input_dir + f'buffer_y_train_{dist}m.npy')
-        buffers_y_valid[dist] = np.load(input_dir + f'buffer_y_valid_{dist}m.npy')
-        buffers_pred_train[dist] = np.load(output_dir + f'buffer_pred_train_{dist}m.npy')
-        buffers_pred_valid[dist] = np.load(output_dir + f'buffer_pred_valid_{dist}m.npy')
+        buffers_y_train[dist] = np.load(input_dir + f'buffer_y_train_{dist}px.npy')
+        buffers_y_valid[dist] = np.load(input_dir + f'buffer_y_valid_{dist}px.npy')
+        buffers_pred_train[dist] = np.load(output_dir + f'buffer_pred_train_{dist}px.npy')
+        buffers_pred_valid[dist] = np.load(output_dir + f'buffer_pred_valid_{dist}px.npy')
     
     
     # Relaxed Metrics for training and validation
@@ -2084,7 +2200,7 @@ def avalia_modelo_ensemble(input_dir: str, output_dir: str, metric_name = 'F1-Sc
     
     
     for dist in dist_buffers:
-        with open(output_dir + f'relaxed_metrics_{dist}m.txt', 'a') as f:
+        with open(output_dir + f'relaxed_metrics_{dist}px.txt', 'a') as f:
             relaxed_precision_train[dist], relaxed_recall_train[dist], relaxed_f1score_train[dist] = compute_relaxed_metrics(y_train, 
                                                                                                        pred_train, buffers_y_train[dist],
                                                                                                        buffers_pred_train[dist], 
@@ -2128,7 +2244,7 @@ def avalia_modelo_ensemble(input_dir: str, output_dir: str, metric_name = 'F1-Sc
     
     # Calcula e salva predição a partir da probabilidade média do ensemble
     if not os.path.exists(os.path.join(output_dir, 'pred_test.npy')):
-        pred_test = calcula_pred_from_prob_ensemble(prob_test_ensemble)
+        pred_test = calcula_pred_from_prob_ensemble_mean(prob_test_ensemble)
         
         pred_test = pred_test.astype(np.uint8)
         
@@ -2156,7 +2272,7 @@ def avalia_modelo_ensemble(input_dir: str, output_dir: str, metric_name = 'F1-Sc
             print('Fazendo Blur nas imagens de teste e gerando as predições')
             x_test_blur = gaussian_filter(x_test.astype(np.float32), sigma=(0 ,std_blur, std_blur, 0)).astype(np.float16)
             _, prob_test_ensemble_blur = Test_Step_Ensemble(model, x_test_blur, 2)
-            pred_test_blur = calcula_pred_from_prob_ensemble(prob_test_ensemble_blur)
+            pred_test_blur = calcula_pred_from_prob_ensemble_mean(prob_test_ensemble_blur)
             x_test_new = np.concatenate((x_test_blur, pred_test_blur), axis=-1).astype(np.float16)
             salva_arrays(output_dir, x_test=x_test_new)
     
@@ -2167,27 +2283,27 @@ def avalia_modelo_ensemble(input_dir: str, output_dir: str, metric_name = 'F1-Sc
     
     for dist in dist_buffers:
         # Buffer para Precisão Relaxada
-        if not os.path.exists(os.path.join(input_dir, f'buffer_y_test_{dist}m.npy')):
+        if not os.path.exists(os.path.join(input_dir, f'buffer_y_test_{dist}px.npy')):
             buffers_y_test[dist] = buffer_patches(y_test, dist_cells=dist)
-            np.save(input_dir + f'buffer_y_test_{dist}m.npy', buffers_y_test[dist])
+            np.save(input_dir + f'buffer_y_test_{dist}px.npy', buffers_y_test[dist])
             
         # Buffer para Sensibilidade Relaxada
-        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_test_{dist}m.npy')):
+        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_test_{dist}px.npy')):
             buffers_pred_test[dist] = buffer_patches(pred_test, dist_cells=dist)
-            np.save(output_dir + f'buffer_pred_test_{dist}m.npy', buffers_pred_test[dist])
+            np.save(output_dir + f'buffer_pred_test_{dist}px.npy', buffers_pred_test[dist])
             
             
     # Lê buffers de arrays de predição do Teste
     for dist in dist_buffers:
-        buffers_y_test[dist] = np.load(input_dir + f'buffer_y_test_{dist}m.npy')
-        buffers_pred_test[dist] = np.load(output_dir + f'buffer_pred_test_{dist}m.npy')
+        buffers_y_test[dist] = np.load(input_dir + f'buffer_y_test_{dist}px.npy')
+        buffers_pred_test[dist] = np.load(output_dir + f'buffer_pred_test_{dist}px.npy')
     
     # Relaxed Metrics for test
     relaxed_precision_test, relaxed_recall_test, relaxed_f1score_test = {}, {}, {}
     
     
     for dist in dist_buffers:
-        with open(output_dir + f'relaxed_metrics_{dist}m.txt', 'a') as f:
+        with open(output_dir + f'relaxed_metrics_{dist}px.txt', 'a') as f:
             relaxed_precision_test[dist], relaxed_recall_test[dist], relaxed_f1score_test[dist] = compute_relaxed_metrics(y_test, 
                                                                                                        pred_test, buffers_y_test[dist],
                                                                                                        buffers_pred_test[dist], 
@@ -2236,27 +2352,27 @@ def avalia_modelo_ensemble(input_dir: str, output_dir: str, metric_name = 'F1-Sc
     
     for dist in dist_buffers:
         # Buffer dos Mosaicos de Referência
-        if not os.path.exists(os.path.join(input_dir, f'buffers_y_mosaics_{dist}m.npy')):
+        if not os.path.exists(os.path.join(input_dir, f'buffers_y_mosaics_{dist}px.npy')):
             buffers_y_mosaics[dist] = buffer_patches(y_mosaics, dist_cells=dist)
-            np.save(input_dir + f'buffer_y_mosaics_{dist}m.npy', buffers_y_mosaics[dist])
+            np.save(input_dir + f'buffer_y_mosaics_{dist}px.npy', buffers_y_mosaics[dist])
             
         # Buffer dos Mosaicos de Predição   
-        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_mosaics_{dist}m.npy')):
+        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_mosaics_{dist}px.npy')):
             buffers_pred_mosaics[dist] = buffer_patches(pred_mosaics, dist_cells=dist)
-            np.save(output_dir + f'buffer_pred_mosaics_{dist}m.npy', buffers_pred_mosaics[dist])
+            np.save(output_dir + f'buffer_pred_mosaics_{dist}px.npy', buffers_pred_mosaics[dist])
     
     
     # Lê buffers de Mosaicos
     for dist in dist_buffers:
-        buffers_y_mosaics[dist] = np.load(input_dir + f'buffer_y_mosaics_{dist}m.npy')
-        buffers_pred_mosaics[dist] = np.load(output_dir + f'buffer_pred_mosaics_{dist}m.npy')  
+        buffers_y_mosaics[dist] = np.load(input_dir + f'buffer_y_mosaics_{dist}px.npy')
+        buffers_pred_mosaics[dist] = np.load(output_dir + f'buffer_pred_mosaics_{dist}px.npy')  
     
     # Avaliação da Qualidade para os Mosaicos de Teste
     # Relaxed Metrics for mosaics test
     relaxed_precision_mosaics, relaxed_recall_mosaics, relaxed_f1score_mosaics = {}, {}, {}
       
     for dist in dist_buffers:
-        with open(output_dir + f'relaxed_metrics_{dist}m.txt', 'a') as f:
+        with open(output_dir + f'relaxed_metrics_{dist}px.txt', 'a') as f:
             relaxed_precision_mosaics[dist], relaxed_recall_mosaics[dist], relaxed_f1score_mosaics[dist] = compute_relaxed_metrics(y_mosaics, 
                                                                                                        pred_mosaics, buffers_y_mosaics[dist],
                                                                                                        buffers_pred_mosaics[dist], 
@@ -2320,7 +2436,7 @@ def calcula_predictive_entropy(prob_array):
     return pred_entropy  
 
 # Calcula predição a partir da probabilidade média do ensemble
-def calcula_pred_from_prob_ensemble(prob_array):
+def calcula_pred_from_prob_ensemble_mean(prob_array):
     # Calcula probabilidade média    
     prob_mean = np.mean(prob_array, axis=0)
 
