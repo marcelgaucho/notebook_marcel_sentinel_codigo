@@ -23,8 +23,8 @@ tf.config.set_logical_device_configuration(
 
 # %% Diretórios de entrada e saída
 
-input_dir = 'entrada/'
-output_dir = 'focal_early_f1/'
+input_dir = 'early_cross_f1_chamorro/'
+output_dir = 'early_100_cross_f1_chamorro_pos_curta/'
 
 
 # %%  Importa função
@@ -34,4 +34,6 @@ from functions_bib import treina_modelo
 # %% Teste da Função
 
 #tf.config.run_functions_eagerly(False)
-treina_modelo(input_dir, output_dir, epochs=150, early_loss=False)
+treina_modelo(input_dir, output_dir, epochs=2000, early_loss=False, 
+              model_type='resunet chamorro pos curta', loss='cross')
+best_model_filename = 'best_model'

@@ -22,6 +22,8 @@ from tensorflow.keras.layers import MaxPool2D, Conv2DTranspose, UpSampling2D, Co
 from tensorflow.keras.layers import Dropout, Add
 from tensorflow.keras.models import Model, load_model
 from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.metrics import Metric
+
 
 from sklearn.utils import shuffle
 
@@ -409,9 +411,12 @@ def build_resunet_chamorro_semdropout(input_shape, nb_filters, n_classes, last_a
     return Model(input_layer, output)
 """
 
+
 # Residual U-Net model para Pós-Processamento
-def build_resunet_chamorro_semdropout(input_shape, nb_filters, n_classes, last_activation='softmax'):
+def build_resunet_chamorro_semdropout_curta(input_shape, nb_filters, n_classes, last_activation='softmax'):
     '''Base network to be shared (eq. to feature extraction)'''
+    print('Rede curta')
+    
     input_layer= Input(shape = input_shape, name="input_enc_net")
     
     res_block1 = resnet_block_chamorro(input_layer, nb_filters[0], 1, dropout=False)
@@ -424,6 +429,45 @@ def build_resunet_chamorro_semdropout(input_shape, nb_filters, n_classes, last_a
     
     upsample2 = Conv2D(nb_filters[1], (3 , 3), activation = 'relu', padding = 'same', 
                        name = 'upsampling_net2')(UpSampling2D(size = (2,2))(res_block3))
+                                                 
+    merged2 = concatenate([res_block2, upsample2], name='concatenate2')
+                                                                                          
+    upsample1 = Conv2D(nb_filters[0], (3 , 3), activation = 'relu', padding = 'same', 
+                       name = 'upsampling_net1')(UpSampling2D(size = (2,2))(merged2))
+    merged1 = concatenate([res_block1, upsample1], name='concatenate1')
+
+    output = Conv2D(n_classes,(1,1), activation = last_activation, padding = 'same', name = 'output')(merged1)
+                                                                                                           
+    return Model(input_layer, output)
+
+
+# Residual U-Net model para Pós-Processamento
+def build_resunet_chamorro_semdropout(input_shape, nb_filters, n_classes, last_activation='softmax'):
+    '''Base network to be shared (eq. to feature extraction)'''
+    input_layer= Input(shape = input_shape, name="input_enc_net")
+    
+    res_block1 = resnet_block_chamorro(input_layer, nb_filters[0], 1, dropout=False)
+    pool1 = MaxPool2D((2 , 2), name='pool_net1')(res_block1)
+    
+    res_block2 = resnet_block_chamorro(pool1, nb_filters[1], 2, dropout=False) 
+    pool2 = MaxPool2D((2 , 2), name='pool_net2')(res_block2)
+    
+    res_block3 = resnet_block_chamorro(pool2, nb_filters[2], 3, dropout=False) 
+    pool3 = MaxPool2D((2 , 2), name='pool_net3')(res_block3)
+    
+    res_block4 = resnet_block_chamorro(pool3, nb_filters[2], 4, dropout=False)
+    
+    res_block5 = resnet_block_chamorro(res_block4, nb_filters[2], 5, dropout=False)
+    
+    res_block6 = resnet_block_chamorro(res_block5, nb_filters[2], 6, dropout=False)
+    
+    upsample3 = Conv2D(nb_filters[2], (3 , 3), activation = 'relu', padding = 'same', 
+                       name = 'upsampling_net3')(UpSampling2D(size = (2,2))(res_block6))
+    
+    merged3 = concatenate([res_block3, upsample3], name='concatenate3')
+
+    upsample2 = Conv2D(nb_filters[1], (3 , 3), activation = 'relu', padding = 'same', 
+                       name = 'upsampling_net2')(UpSampling2D(size = (2,2))(merged3))
                                                  
     merged2 = concatenate([res_block2, upsample2], name='concatenate2')
                                                                                           
@@ -511,10 +555,14 @@ def build_model(input_shape, n_classes, model_type='unet'):
         return build_model_corred(input_shape, n_classes)
 
     elif model_type == 'resunet chamorro pos':
-         return build_resunet_chamorro_semdropout(input_shape, (16, 32, 64), n_classes)
+         return build_resunet_chamorro_semdropout(input_shape, (64, 128, 256), n_classes)
+     
+    elif model_type == 'resunet chamorro pos curta':
+         return build_resunet_chamorro_semdropout_curta(input_shape, (64, 128, 256), n_classes)
     
     else:
-        raise Exception("Model options are 'unet' and 'resunet' and 'resunet chamorro' and 'corred' and 'resunet chamorro pos' ")
+        raise Exception("Model options are 'unet' and 'resunet' and 'resunet chamorro' and 'corred' and "
+                        "'resunet chamorro pos' and 'resunet chamorro pos curta'")
         
 
 
@@ -561,12 +609,13 @@ def get_batch_samples(x, y, batch, batch_size, data_augmentation, number_samples
 
 
 def train_unet(net, x_train, y_train, x_valid, y_valid, batch_size, epochs, early_stopping_epochs, early_stopping_delta, filepath, 
-               filename, early_stopping=True, early_loss=False, metric_name='my_f1score'):
+               filename, early_stopping=True, early_loss=False, metric_name='f1score'):
     print('Start the training...')
     
     early_stop = None
     filepath_name = os.path.join(filepath, filename+'.h5')
     log_dir = os.path.join(filepath, 'logs', 'fit') #, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+    os.makedirs(log_dir, exist_ok=True)
     shutil.rmtree(log_dir)
     tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir)
 
@@ -623,12 +672,12 @@ def train_unet(net, x_train, y_train, x_valid, y_valid, batch_size, epochs, earl
     historia = history.history
     
     lista_loss = historia['loss']
-    lista_f1score = historia['my_f1score']
+    lista_metric = historia[metric_name]
     lista_val_loss = historia['val_loss']
-    lista_val_f1score = historia['val_my_f1score']
+    lista_val_metric = historia['val_' + metric_name]
     
-    history_train = [np.array([dupla]) for dupla in zip(lista_loss, lista_f1score)]
-    history_valid = [np.array([dupla]) for dupla in zip(lista_val_loss, lista_val_f1score)]
+    history_train = [np.array([dupla]) for dupla in zip(lista_loss, lista_metric)]
+    history_valid = [np.array([dupla]) for dupla in zip(lista_val_loss, lista_val_metric)]
     resultado = [ history_train, history_valid ]
     
     return resultado
@@ -1383,10 +1432,59 @@ def my_f1score(y_true, y_pred):
     return f1score
 
 
+class F1Score(Metric):
+    def __init__(self, name='f1score', beta=1, threshold=0.5, epsilon=1e-7, **kwargs):
+        # initializing an object of the super class
+        super(F1Score, self).__init__(name=name, **kwargs)
+          
+        # initializing state variables
+        self.tp = self.add_weight(name='tp', initializer='zeros') # initializing true positives 
+        self.actual_positive = self.add_weight(name='fp', initializer='zeros') # initializing actual positives
+        self.predicted_positive = self.add_weight(name='fn', initializer='zeros') # initializing predicted positives
+          
+        # initializing other atrributes that wouldn't be changed for every object of this class
+        self.beta_squared = beta**2 
+        self.threshold = threshold
+        self.epsilon = epsilon
+    
+    def update_state(self, ytrue, ypred, sample_weight=None):
+        # Pega só referente a classe 1
+        ypred = ypred[..., 1:2] 
+        ytrue = ytrue[..., 1:2] 
+          
+        # casting ytrue and ypred as float dtype
+        ytrue = tf.cast(ytrue, tf.float32)
+        ypred = tf.cast(ypred, tf.float32)
+        
+        #print(f'Shape Shape de Y True é {ytrue.shape}')
+        #print(f'Shape Shape de Y Pred é {ytrue.shape}')
+          
+        # setting values of ypred greater than the set threshold to 1 while those lesser to 0
+        ypred = tf.cast(tf.greater_equal(ypred, tf.constant(self.threshold)), tf.float32)
+            
+        self.tp.assign_add(tf.reduce_sum(ytrue*ypred)) # updating true positives atrribute
+        self.predicted_positive.assign_add(tf.reduce_sum(ypred)) # updating predicted positive atrribute
+        self.actual_positive.assign_add(tf.reduce_sum(ytrue)) # updating actual positive atrribute
+    
+    def result(self):
+        self.precision = self.tp/(self.predicted_positive+self.epsilon) # calculates precision
+        self.recall = self.tp/(self.actual_positive+self.epsilon) # calculates recall
+          
+        # calculating fbeta
+        self.fb = (1+self.beta_squared)*self.precision*self.recall / (self.beta_squared*self.precision + self.recall + self.epsilon)
+        
+        return self.fb
+    
+    def reset_state(self):
+        self.tp.assign(0) # resets true positives to zero
+        self.predicted_positive.assign(0) # resets predicted positives to zero
+        self.actual_positive.assign(0) # resets actual positives to zero
+
+
 # Função para treinar o modelo conforme os dados (arrays numpy) em uma pasta de entrada, salvando o modelo e o 
 # histórico na pasta de saída
 def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet chamorro', epochs=150, early_stopping=True, 
-                  early_loss=True, loss='focal', gamma=2, metric=my_f1score, best_model_filename = 'best_model'):
+                  early_loss=True, loss='focal', gamma=2, metric=F1Score(), best_model_filename = 'best_model'):
     '''
     
 
@@ -1448,12 +1546,13 @@ def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet cha
 
     # Definição dos hiperparâmetros
     batch_size = 32
-    learning_rate = 0.01
+    learning_rate = 0.001
+    #learning_rate = 0.01 # não estava convergindo na primeira rede
     epochs = epochs
 
     # Parâmetros do Early Stopping
     early_stopping = early_stopping
-    early_stopping_epochs = 50
+    early_stopping_epochs = 100
     #early_stopping_epochs = 2
     #early_stopping_delta = 0.001 # aumento delta (percentual de diminuição da perda) equivalente a 0.01%
     early_stopping_delta = 0.001 # aumento delta (percentual de diminuição da perda) equivalente a 0.01%
@@ -1529,7 +1628,7 @@ def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet cha
     with open(os.path.join(output_dir, 'history_' + best_model_filename + '.txt'), 'w') as f:
         f.write('history = \n')
         f.write(str(history))
-        f.write(f'Tempo total gasto no treinamento foi de {end-start} segundos')
+        f.write(f'\nTempo total gasto no treinamento foi de {end-start} segundos')
         
     with open(os.path.join(output_dir, 'history_pickle_' +  best_model_filename + '.pickle'), "wb") as fp: # Salva histórico (lista Python) para recuperar depois
         pickle.dump(history, fp)
@@ -1542,7 +1641,7 @@ def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet cha
 
 
 def treina_modelo_ensemble(input_dir: str, output_dir_ensemble: str, n_members: int = 10, model_type: str ='resunet', epochs=150, 
-                           early_stopping=True, early_loss=True, loss='focal', gamma=2, metric=my_f1score, 
+                           early_stopping=True, early_loss=True, loss='focal', gamma=2, metric=F1Score(), 
                            best_model_filename = 'best_model'):
     # Loop para treinar vários modelos diversas vezes
     for i in range(n_members):
@@ -1682,8 +1781,9 @@ def gera_graficos(metrics_dirs_list, lista_nomes_exp, save_path=r''):
 # Além disso constroi os mosaicos de resultado 
 # Etapa 1 se refere ao processamento no qual a entrada do pós-processamento é a predição do modelo
 # Etapa 2 ao processamento no qual a entrada do pós-processamento é a imagem original mais a predição do modelo
-# Etapa 3 ao processamento no qual a entrada do pós-processamento é a imagem original com blur gaussiano mais a predição desses dados ruidosos com o modelo
-# Etapa 4 se refere ao pós-processamento   
+# Etapa 3 ao processamento no qual a entrada do pós-processamento é a imagem original mais a predição dela com blur gaussiano 
+# Etapa 4 ao processamento no qual a entrada do pós-processamento é a imagem original com blur gaussiano em certos subpatches
+# Etapa 5 se refere ao pós-processamento   
 def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score', 
                   etapa=3, dist_buffers = [3], std_blur = 0.4, subpatch_size=32,
                   k=3):
