@@ -1362,6 +1362,8 @@ def copia_tiles_filtrados(tiles_folder, new_tiles_folder, indices_filtro, cols):
 def extract_patches_from_tiles(imgs_labels_dict, patch_size, patch_stride, border_patches=False):
     tile_items = list(imgs_labels_dict.items())
     
+    x_patches, y_patches = [], []
+    
     for i in range(len(tile_items)):
         tile_item = tile_items[i]
         
@@ -1372,14 +1374,17 @@ def extract_patches_from_tiles(imgs_labels_dict, patch_size, patch_stride, borde
         print(f'tile_items img {i} =' , tile_item[0])
         print(f'tile_items label {i} =' , tile_item[1])
         
-        # Concatenate result patches to form result    
-        if i == 0:
-            x_patches, y_patches = extract_patches(img_tile, label_tile, patch_size, patch_stride, border_patches=border_patches)
-        else:
-            x_patches_new, y_patches_new = extract_patches(img_tile, label_tile, patch_size, patch_stride, border_patches=border_patches)
-            x_patches = np.concatenate((x_patches, x_patches_new), axis=0)
-            y_patches = np.concatenate((y_patches, y_patches_new), axis=0)
-            
+        # Add to list 
+        x_patches_new, y_patches_new = extract_patches(img_tile, label_tile, patch_size, patch_stride, border_patches=border_patches)
+        
+        x_patches.append(x_patches_new)
+        y_patches.append(y_patches_new)
+        
+           
+
+    # Concatenate patches
+    x_patches = np.concatenate(x_patches, axis=0)
+    y_patches = np.concatenate(y_patches, axis=0)
 
     # Transform y_patches, shape (N, H, W) into shape (N, H, W, C). Necessary for data agumentation.
     y_patches = np.expand_dims(y_patches, 3)
@@ -1484,7 +1489,8 @@ class F1Score(Metric):
 # Função para treinar o modelo conforme os dados (arrays numpy) em uma pasta de entrada, salvando o modelo e o 
 # histórico na pasta de saída
 def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet chamorro', epochs=150, early_stopping=True, 
-                  early_loss=True, loss='focal', gamma=2, metric=F1Score(), best_model_filename = 'best_model'):
+                  early_loss=True, loss='cross', gamma=2, metric=F1Score(), best_model_filename = 'best_model',
+                  train_with_dataset=False):
     '''
     
 
@@ -2043,11 +2049,11 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
     
     # Stride e Dimensões do Tile
     patch_test_stride = 96 # tem que estabelecer de forma manual de acordo com o stride usado para extrair os patches
-    labels_test_shape = (1408, 1280) # também tem que estabelecer de forma manual de acordo com as dimensões da imagem de referência
-    n_test_tiles = 10 # Número de tiles de teste  
+    labels_test_shape = (1500, 1500) # também tem que estabelecer de forma manual de acordo com as dimensões da imagem de referência
+    n_test_tiles = 49 # Número de tiles de teste  
     
     # Pasta com os tiles de teste para pegar informações de georreferência
-    test_labels_tiles_dir = r'new_teste_tiles\masks\test'
+    test_labels_tiles_dir = r'dataset_massachusetts_mnih/test/maps'
     labels_paths = [os.path.join(test_labels_tiles_dir, arq) for arq in os.listdir(test_labels_tiles_dir)]
     
     # Gera mosaicos e lista com os mosaicos previstos
@@ -2588,10 +2594,13 @@ def gera_mosaicos(output_dir, pred_array, labels_paths, prefix='outmosaic', patc
         labels_path = labels_paths[i]
         
         filename_wo_ext = labels_path.split(os.path.sep)[-1].split('.tif')[0]
+        '''
         tile_line = int(filename_wo_ext.split('_')[1])
         tile_col = int(filename_wo_ext.split('_')[2])
         
         out_mosaic_name = prefix + '_' + str(tile_line) + '_' + str(tile_col) + r'.tif'
+        '''
+        out_mosaic_name = prefix + '_' + filename_wo_ext + r'.tif'
         out_mosaic_path = os.path.join(output_dir, out_mosaic_name)
         
         if is_float:
@@ -2884,3 +2893,158 @@ def blur_x_patches(x_train, y_train, subpatch_size, k, std_blur, model):
 
     # Retorna patches com blur e predições
     return x_train_blur, pred_train_blur
+    
+    
+    
+
+# intersection between line(p1, p2) and line(p3, p4)
+# Extraído de https://gist.github.com/kylemcdonald/6132fc1c29fd3767691442ba4bc84018
+def intersect(p1, p2, p3, p4):
+    x1,y1 = p1
+    x2,y2 = p2
+    x3,y3 = p3
+    x4,y4 = p4
+    denom = (y4-y3)*(x2-x1) - (x4-x3)*(y2-y1)
+    if denom == 0: # parallel
+        return None
+    ua = ((x4-x3)*(y1-y3) - (y4-y3)*(x1-x3)) / denom
+    if ua < 0 or ua > 1: # out of range
+        return None
+    ub = ((x2-x1)*(y1-y3) - (y2-y1)*(x1-x3)) / denom
+    if ub < 0 or ub > 1: # out of range
+        return None
+    x = x1 + ua * (x2-x1)
+    y = y1 + ua * (y2-y1)
+    return (x,y)
+
+
+
+def plota_curva_precision_recall_relaxada(y, prob, buffer_y, buffer_px=3, num_pontos=10, output_dir='',
+                                          save_figure=True):
+    '''
+    
+
+    Parameters
+    ----------
+    y : TYPE
+        DESCRIPTION. Array de Referência
+    prob : TYPE
+        DESCRIPTION. Array de Probabilidades gerado a partir do modelo
+    buffer_y : TYPE
+        DESCRIPTION. Buffer de  buffer_px do Array de Referência 
+    buffer_px : TYPE
+        DESCRIPTION. Valor do buffer em pixels, exemplo: 1, 2, 3.
+    num_pontos : TYPE, optional
+        DESCRIPTION. The default is 100. Número de pontos para gerar no gráfico. 
+        A ligação desses pontos formará a curva precision-recall relaxada
+
+    Returns
+    -------
+    precision_scores
+        DESCRIPTION. sequência de precisões para cada limiar
+    recall_scores
+        DESCRIPTION. sequência de recalls para cada limiar
+    intersection_found
+        DESCRIPTION. ponto em que precision=recall, ou seja, que intercepta a reta em que
+        precision=recall, chamado de breakeven point.        
+
+
+    '''    
+    # Achata arrays
+    y_flat = np.reshape(y, (y.shape[0] * y.shape[1] * y.shape[2]))
+    buffer_y_flat = np.reshape(buffer_y, (buffer_y.shape[0] * buffer_y.shape[1] * buffer_y.shape[2]))
+    
+    # Define sequências de limiares que serão usados para gerar 
+    # resultados de precision e recall
+    probability_thresholds = np.linspace(0, 1, num=num_pontos)
+    
+    # Lista de Precisões e Recalls
+    precision_scores = []
+    recall_scores = []
+    
+    # Cria diretório para armazenar os buffers (por questão de performance)
+    # Salva e carrega o buffer
+    #prob_temp_dir = os.path.join(output_dir, 'prob_temp')
+    #os.makedirs(prob_temp_dir, exist_ok=True)
+    
+    # Percorre probabilidades e calcula precisão e recall para cada uma delas
+    # Adiciona cada uma a sua respectiva lista
+    for i, p in enumerate(probability_thresholds):
+        print(f'Calculando resultados {i+1}/{num_pontos}')
+        # Predição e Buffer da Predição
+        pred_for_prob = (prob > p).astype('uint8')
+        #np.save(os.path.join(prob_temp_dir, f'prob_temp_list{i}.npy'), pred_for_prob)
+        #pred_for_prob = np.load(os.path.join(prob_temp_dir, f'prob_temp_list{i}.npy')) 
+        buffer_for_prob = buffer_patches(pred_for_prob, dist_cells=buffer_px)
+       
+        
+        # Achatamento da Predição e Buffer da Predição, para entrada na função
+        pred_for_prob_flat = np.reshape(pred_for_prob, (pred_for_prob.shape[0] * pred_for_prob.shape[1] * pred_for_prob.shape[2]))
+        buffer_for_prob_flat = np.reshape(buffer_for_prob, (buffer_for_prob.shape[0] * buffer_for_prob.shape[1] * buffer_for_prob.shape[2]))
+        
+        # Cálculo da precisão e recall relaxados
+        relaxed_precision = precision_score(buffer_y_flat, pred_for_prob_flat, pos_label=1, zero_division=1)
+        relaxed_recall = recall_score(y_flat, buffer_for_prob_flat, pos_label=1, zero_division=1)
+        
+        # Adiciona precisão e recall às suas listas
+        precision_scores.append(relaxed_precision)
+        recall_scores.append(relaxed_recall)
+        
+        
+    # Segmento de Linha (p1, p2) pertencerá à reta precision=recall
+    # ou seja, está na diagonal do gráfico 
+    p1 = (0,0)
+    p2 = (1,1)
+    
+    # Acha algum segmento que faz interseção com a linha em que precision=recall        
+    intersections = []
+        
+    for i in range(len(precision_scores)-1):
+        print(i)
+        # p3 vai ser o ponto atual da sequência e p4 será o próximo ponto
+        p3 = (precision_scores[i], recall_scores[i])
+        p4 = (precision_scores[i+1], recall_scores[i+1])
+        
+        print(p3, p4)
+        
+        # Adiciona à lists de interseções
+        intersection = intersect(p1, p2, p3, p4)
+        if intersection:
+            intersections.append(intersection)
+        else:
+            intersections.append(False)
+            
+    # Pega a primeira interseção da lista caso múltiplas forem achadas        
+    intersection_found = [inter for inter in intersections if inter is not False][0]
+        
+    # Exporta figura
+    fig, ax = plt.subplots()
+    ax.plot(precision_scores, recall_scores)
+    ax.plot(intersection_found[0], intersection_found[1], marker="o", markersize=10)
+    ax.set_xlabel('Precision')
+    ax.set_ylabel('Recall')
+    ax.set_title('Curva Precision x Recall')
+
+    if save_figure:    
+        fig.savefig(output_dir + f'curva_precision_recall_{buffer_px}px.png')
+    
+    plt.show()
+
+    # Salva resultados em um dicionário
+    curva_precision_recall_results = {'precision_scores':precision_scores,
+                                      'recall_scores':recall_scores,
+                                      'intersection_found':intersection_found}
+
+
+    with open(output_dir + 'curva_precision_recall_results' + '.pickle', "wb") as fp: # Salva dicionário com métricas do resultado do experimento
+        pickle.dump(curva_precision_recall_results, fp)
+        
+    # Imprime em arquivo de resultado
+    with open(output_dir + f'relaxed_metrics_{buffer_px}px.txt', 'a') as f:
+        print('\nBreakeven point in Precision-Recall Curve for Teste', file=f)
+        print('=======', file=f)
+        print('Precision=Recall in point: (%.4f, %.4f)' % (intersection_found[0], intersection_found[1]), file=f)
+        print() 
+        
+        
+    return precision_scores, recall_scores, intersection_found
