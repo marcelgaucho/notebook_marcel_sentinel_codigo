@@ -16,6 +16,7 @@ import random
 import time
 import datetime
 import types
+import gc
 
 from tensorflow.keras.layers import Input, concatenate, Conv2D, BatchNormalization, Activation 
 from tensorflow.keras.layers import MaxPool2D, Conv2DTranspose, UpSampling2D, Concatenate
@@ -32,8 +33,8 @@ from sklearn.metrics import (confusion_matrix, f1_score, precision_score,
 
 from scipy.ndimage import gaussian_filter
 
-from tensorflow.keras.optimizers import Adam
-from focal_loss import SparseCategoricalFocalLoss
+from tensorflow.keras.optimizers import Adam, SGD
+#from focal_loss import SparseCategoricalFocalLoss
 
 
 
@@ -609,7 +610,7 @@ def get_batch_samples(x, y, batch, batch_size, data_augmentation, number_samples
 
 
 def train_unet(net, x_train, y_train, x_valid, y_valid, batch_size, epochs, early_stopping_epochs, early_stopping_delta, filepath, 
-               filename, early_stopping=True, early_loss=False, metric_name='f1score'):
+               filename, early_stopping=True, early_loss=False, metric_name='f1score', lr_decay=False):
     print('Start the training...')
     
     early_stop = None
@@ -618,6 +619,18 @@ def train_unet(net, x_train, y_train, x_valid, y_valid, batch_size, epochs, earl
     os.makedirs(log_dir, exist_ok=True)
     shutil.rmtree(log_dir)
     tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir)
+    
+    # Com Learning Rate Decay
+    if lr_decay:
+        initial_lrate = 0.001
+        drop = 0.1
+        epochs_drop = 20.0
+        print(f'Initial Learning Rate={initial_lrate}, Drop={drop}, Epochs Drop={epochs_drop}')        
+        def step_decay(epoch):
+            lrate = initial_lrate * math.pow(drop, math.floor((1+epoch)/epochs_drop))
+            return lrate
+        
+        lrate = tf.keras.callbacks.LearningRateScheduler(step_decay)
 
     
     # Com Early Stopping
@@ -659,10 +672,18 @@ def train_unet(net, x_train, y_train, x_valid, y_valid, batch_size, epochs, earl
                                                          save_best_only=False)
     
     # Constroi lista de callbacks
-    if early_stop:
-        callbacks = [early_stop, cp_callback, tensorboard_callback]
+    if lr_decay:
+        if early_stop:
+            callbacks = [early_stop, cp_callback, tensorboard_callback, lrate]
+        else:
+            callbacks = [cp_callback, tensorboard_callback, lrate]
+    
     else:
-        callbacks = [cp_callback, tensorboard_callback]
+        if early_stop:
+            callbacks = [early_stop, cp_callback, tensorboard_callback]
+        else:
+            callbacks = [cp_callback, tensorboard_callback]
+        
         
     # Treina Modelo
     history = net.fit(x_train, y_train, batch_size=batch_size, epochs=epochs, verbose='auto',
@@ -1096,17 +1117,21 @@ def buffer_binary_raster(in_raster_path, out_raster_path, dist_cells=3):
 # Faz buffer nos patches, sendo que o buffer é feito percorrendo os patches e fazendo o buffer,
 # um por um
 def buffer_patches(patch_test, dist_cells=3):
+    result = []
+    
     for i in range(len(patch_test)):
         print('Buffering patch {}/{}'.format(i+1, len(patch_test))) 
         # Patch being buffered 
         patch_batch = patch_test[i, ..., 0]
         
-        # Concatenate result patches to form result
-        if i == 0:
-            result = array_buffer(patch_batch, dist_cells=dist_cells)[np.newaxis, ..., np.newaxis]
-        else:
-            patch_batch_r_new = array_buffer(patch_batch, dist_cells=dist_cells)[np.newaxis, ..., np.newaxis]
-            result = np.concatenate((result, patch_batch_r_new), axis=0)
+        # Do buffer
+        patch_batch_r_new = array_buffer(patch_batch, dist_cells=dist_cells)[np.newaxis, ..., np.newaxis]
+
+        # Append to result list       
+        result.append(patch_batch_r_new)
+        
+    # Concatenate result patches to form result
+    result = np.concatenate(result, axis=0)
             
     return result
 
@@ -1489,8 +1514,8 @@ class F1Score(Metric):
 # Função para treinar o modelo conforme os dados (arrays numpy) em uma pasta de entrada, salvando o modelo e o 
 # histórico na pasta de saída
 def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet chamorro', epochs=150, early_stopping=True, 
-                  early_loss=True, loss='cross', gamma=2, metric=F1Score(), best_model_filename = 'best_model',
-                  train_with_dataset=False):
+                  early_loss=False, loss='cross', gamma=2, metric=F1Score(), best_model_filename = 'best_model',
+                  train_with_dataset=False, lr_decay=False):
     '''
     
 
@@ -1505,6 +1530,9 @@ def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet cha
         DESCRIPTION. The default is 'resunet'.
      : TYPE
         DESCRIPTION.
+    lr_decay=Dicionário, por exemplo, {initial_lrate = 0.1,
+             drop = 0.5,
+             epochs_drop = 10.0}, ou None, para sem learning rate decay 
 
     Returns
     -------
@@ -1551,17 +1579,18 @@ def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet cha
     
 
     # Definição dos hiperparâmetros
-    batch_size = 32
+    batch_size = 8
     learning_rate = 0.001
     #learning_rate = 0.01 # não estava convergindo na primeira rede
+    
     epochs = epochs
 
     # Parâmetros do Early Stopping
     early_stopping = early_stopping
     early_stopping_epochs = 100
     #early_stopping_epochs = 2
-    #early_stopping_delta = 0.001 # aumento delta (percentual de diminuição da perda) equivalente a 0.01%
-    early_stopping_delta = 0.001 # aumento delta (percentual de diminuição da perda) equivalente a 0.01%
+    #early_stopping_delta = 0.001 # aumento delta (percentual de diminuição da perda) equivalente a 0.1%
+    early_stopping_delta = 0.001 # aumento delta (percentual de diminuição da perda) equivalente a 0.1%
 
     
     # Sem Data Augmentation (Ele é feito direto no conjunto de treinamento)
@@ -1572,10 +1601,15 @@ def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet cha
     
     # Compila o modelo
     if loss == 'focal':
-        model.compile(loss = SparseCategoricalFocalLoss(gamma=gamma), optimizer=adam , metrics=[metric])
+        model.compile(loss = 'sparse_categorical_crossentropy', optimizer=adam , metrics=[metric])
     elif loss == 'cross':
         #model.compile(loss = 'sparse_categorical_crossentropy', optimizer=adam, metrics=[metric])
         model.compile(loss = 'categorical_crossentropy', optimizer=adam, metrics=[metric])
+    elif loss == 'mse':
+        adam = SGD(learning_rate = learning_rate)
+        model.compile(loss = 'mse', optimizer=adam, metrics=[metric])
+        
+        
 
     print('Hiperparâmetros:')
     print('Modelo:', model_type)
@@ -1608,19 +1642,19 @@ def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet cha
     if isinstance(metric, str):
         history = train_unet(model, x_train, y_train, x_valid, y_valid, batch_size, epochs, early_stopping_epochs, early_stopping_delta, 
                      output_dir, best_model_filename, early_stopping=early_stopping, early_loss=early_loss, 
-                     metric_name=metric)
+                     metric_name=metric, lr_decay=lr_decay)
     
     # Testa se é instância
     elif isinstance(metric, object):
         history = train_unet(model, x_train, y_train, x_valid, y_valid, batch_size, epochs, early_stopping_epochs, early_stopping_delta, 
                          output_dir, best_model_filename, early_stopping=early_stopping, early_loss=early_loss, 
-                         metric_name=metric.__class__.__name__.lower())
+                         metric_name=metric.__class__.__name__.lower(), lr_decay=lr_decay)
         
     # Testa se é função
     elif isinstance(metric, (types.FunctionType, types.BuiltinFunctionType)):
         history = train_unet(model, x_train, y_train, x_valid, y_valid, batch_size, epochs, early_stopping_epochs, early_stopping_delta, 
                          output_dir, best_model_filename, early_stopping=early_stopping, early_loss=early_loss, 
-                         metric_name=metric.__name__)
+                         metric_name=metric.__name__, lr_decay=lr_decay)
 
         
 
@@ -1782,6 +1816,7 @@ def gera_graficos(metrics_dirs_list, lista_nomes_exp, save_path=r''):
                                  'Mosaicos de Teste', save=True, save_path=save_path)
 
 
+"""
 # Avalia um modelo segundo conjuntos de treino, validação, teste e mosaicos de teste
 # Retorna as métricas de precisão, recall e f1-score relaxados
 # Além disso constroi os mosaicos de resultado 
@@ -2048,7 +2083,7 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
                                                                                                        print_file=f)
     
     # Stride e Dimensões do Tile
-    patch_test_stride = 96 # tem que estabelecer de forma manual de acordo com o stride usado para extrair os patches
+    patch_test_stride = 210 # tem que estabelecer de forma manual de acordo com o stride usado para extrair os patches
     labels_test_shape = (1500, 1500) # também tem que estabelecer de forma manual de acordo com as dimensões da imagem de referência
     n_test_tiles = 49 # Número de tiles de teste  
     
@@ -2115,6 +2150,326 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
             
     
     # Save and Return dictionary with the values of precision, recall and F1-Score for all the groups (Train, Validation, Test, Mosaics of Test)
+    dict_results = {
+        'relaxed_precision_train': relaxed_precision_train, 'relaxed_recall_train': relaxed_recall_train, 'relaxed_f1score_train': relaxed_f1score_train,
+        'relaxed_precision_valid': relaxed_precision_valid, 'relaxed_recall_valid': relaxed_recall_valid, 'relaxed_f1score_valid': relaxed_f1score_valid,
+        'relaxed_precision_test': relaxed_precision_test, 'relaxed_recall_test': relaxed_recall_test, 'relaxed_f1score_test': relaxed_f1score_test,
+        'relaxed_precision_mosaics': relaxed_precision_mosaics, 'relaxed_recall_mosaics': relaxed_recall_mosaics, 'relaxed_f1score_mosaics': relaxed_f1score_mosaics             
+        }
+    
+    with open(output_dir + 'resultados_metricas' + '.pickle', "wb") as fp: # Salva dicionário com métricas do resultado do experimento
+        pickle.dump(dict_results, fp)
+    
+    return dict_results
+"""
+
+
+# Avalia um modelo segundo conjuntos de treino, validação, teste e mosaicos de teste
+def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score', 
+                  etapa=3, dist_buffers = [3], std_blur = 0.4, subpatch_size=32,
+                  k=3, avalia_train=False):
+    metric_name = metric_name
+    etapa = etapa
+    dist_buffers = dist_buffers
+    std_blur = std_blur
+    
+    # Nome do modelo salvo
+    best_model_filename = 'best_model'
+    
+    # Lê histórico
+    with open(output_dir + 'history_pickle_' + best_model_filename + '.pickle', "rb") as fp:   
+        history = pickle.load(fp)
+    
+    # Mostra histórico em gráfico
+    show_graph_loss_accuracy(np.asarray(history), 1, metric_name = metric_name, save=True, save_path=output_dir)
+
+    # Load model
+    model = load_model(output_dir + best_model_filename + '.h5', compile=False)
+
+    # Avalia treino    
+    if avalia_train:
+        x_train = np.load(input_dir + 'x_train.npy')
+        y_train = np.load(input_dir + 'y_train.npy')
+
+        if not os.path.exists(os.path.join(output_dir, 'pred_train.npy')) or \
+           not os.path.exists(os.path.join(output_dir, 'prob_train.npy')): 
+    
+            pred_train, prob_train = Test_Step(model, x_train, 2)
+            
+            # Probabilidade apenas da classe 1 (de estradas)
+            prob_train = prob_train[..., 1:2] 
+            
+            # Converte para tipos que ocupam menos espaço
+            pred_train = pred_train.astype(np.uint8)
+            prob_train = prob_train.astype(np.float16)
+
+            # Salva arrays de predição do Treinamento e Validação    
+            salva_arrays(output_dir, pred_train=pred_train, prob_train=prob_train)
+        
+        pred_train = np.load(output_dir + 'pred_train.npy')
+        prob_train = np.load(output_dir + 'prob_train.npy')
+
+        # Faz os Buffers necessários, para treino, nas imagens 
+        
+        # Precisão Relaxada - Buffer na imagem de rótulos
+        # Sensibilidade Relaxada - Buffer na imagem extraída
+        # F1-Score Relaxado - É obtido através da Precisão e Sensibilidade Relaxadas
+        
+        buffers_y_train = {}
+        buffers_pred_train = {}
+    
+        for dist in dist_buffers:
+            # Buffers para Precisão Relaxada
+            if not os.path.exists(os.path.join(input_dir, f'buffer_y_train_{dist}px.npy')): 
+                buffers_y_train[dist] = buffer_patches(y_train, dist_cells=dist)
+                np.save(input_dir + f'buffer_y_train_{dist}px.npy', buffers_y_train[dist])
+                
+            # Buffers para Sensibilidade Relaxada
+            if not os.path.exists(os.path.join(output_dir, f'buffer_pred_train_{dist}px.npy')):
+                buffers_pred_train[dist] = buffer_patches(pred_train, dist_cells=dist)
+                np.save(output_dir + f'buffer_pred_train_{dist}px.npy', buffers_pred_train[dist])
+            
+
+        # Lê buffers de arrays de predição do Treinamento
+        for dist in dist_buffers:
+            buffers_y_train[dist] = np.load(input_dir + f'buffer_y_train_{dist}px.npy')            
+            buffers_pred_train[dist] = np.load(output_dir + f'buffer_pred_train_{dist}px.npy')
+  
+        
+        # Relaxed Metrics for training
+        relaxed_precision_train, relaxed_recall_train, relaxed_f1score_train = {}, {}, {}
+    
+    
+        for dist in dist_buffers:
+            with open(output_dir + f'relaxed_metrics_{dist}px.txt', 'a') as f:
+                relaxed_precision_train[dist], relaxed_recall_train[dist], relaxed_f1score_train[dist] = compute_relaxed_metrics(y_train, 
+                                                                                                                                     pred_train, buffers_y_train[dist],
+                                                                                                                                     buffers_pred_train[dist], 
+                                                                                                                                     nome_conjunto = 'Treino', 
+                                                                                                                                     print_file=f)        
+           
+    
+        # Release Memory
+        x_train = None
+        y_train = None
+        pred_train = None
+        prob_train = None
+        
+        buffers_y_train = None
+        buffers_pred_train = None
+            
+        gc.collect()
+    
+    # Avalia Valid
+    x_valid = np.load(input_dir + 'x_valid.npy')
+    y_valid = np.load(input_dir + 'y_valid.npy')
+    
+    if not os.path.exists(os.path.join(output_dir, 'pred_valid.npy')) or \
+       not os.path.exists(os.path.join(output_dir, 'prob_valid.npy')):
+           
+           pred_valid, prob_valid = Test_Step(model, x_valid, 2)
+           
+           # Probabilidade apenas da classe 1 (de estradas)
+           prob_valid = prob_valid[..., 1:2]
+           
+           # Converte para tipos que ocupam menos espaço
+           pred_valid = pred_valid.astype(np.uint8)
+           prob_valid = prob_valid.astype(np.float16)
+           
+           # Salva arrays de predição do Treinamento e Validação    
+           salva_arrays(output_dir, pred_valid=pred_valid, prob_valid=prob_valid)
+           
+    pred_valid = np.load(output_dir + 'pred_valid.npy')
+    prob_valid = np.load(output_dir + 'prob_valid.npy')
+    
+    buffers_y_valid = {}
+    buffers_pred_valid = {}
+    
+    for dist in dist_buffers:
+        # Buffers para Precisão Relaxada
+        if not os.path.exists(os.path.join(input_dir, f'buffer_y_valid_{dist}px.npy')): 
+            buffers_y_valid[dist] = buffer_patches(y_valid, dist_cells=dist)
+            np.save(input_dir + f'buffer_y_valid_{dist}px.npy', buffers_y_valid[dist])
+        
+        # Buffers para Sensibilidade Relaxada
+        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_valid_{dist}px.npy')): 
+            buffers_pred_valid[dist] = buffer_patches(pred_valid, dist_cells=dist)
+            np.save(output_dir + f'buffer_pred_valid_{dist}px.npy', buffers_pred_valid[dist])
+            
+            
+    for dist in dist_buffers:
+        buffers_y_valid[dist] = np.load(input_dir + f'buffer_y_valid_{dist}px.npy')
+        buffers_pred_valid[dist] = np.load(output_dir + f'buffer_pred_valid_{dist}px.npy')
+        
+        
+    relaxed_precision_valid, relaxed_recall_valid, relaxed_f1score_valid = {}, {}, {}
+    
+    for dist in dist_buffers:
+        with open(output_dir + f'relaxed_metrics_{dist}px.txt', 'a') as f:
+            relaxed_precision_valid[dist], relaxed_recall_valid[dist], relaxed_f1score_valid[dist] = compute_relaxed_metrics(y_valid, 
+                                                                                                           pred_valid, buffers_y_valid[dist],
+                                                                                                           buffers_pred_valid[dist],
+                                                                                                           nome_conjunto = 'Validação',
+                                                                                                           print_file=f) 
+            
+
+    x_valid = None
+    y_valid = None
+    pred_valid = None
+    prob_valid = None   
+        
+    buffers_y_valid = None
+    buffers_pred_valid = None
+        
+    gc.collect()
+
+
+    # Avalia teste
+    x_test = np.load(input_dir + 'x_test.npy')
+    y_test = np.load(input_dir + 'y_test.npy')
+    
+    if not os.path.exists(os.path.join(output_dir, 'pred_test.npy')) or \
+       not os.path.exists(os.path.join(output_dir, 'prob_test.npy')):
+        pred_test, prob_test = Test_Step(model, x_test, 2)
+        
+        prob_test = prob_test[..., 1:2] # Essa é a probabilidade de prever estrada (valor de pixel 1)
+    
+        # Converte para tipos que ocupam menos espaço
+        pred_test = pred_test.astype(np.uint8)
+        prob_test = prob_test.astype(np.float16)
+        
+        # Salva arrays de predição do Teste. Arquivos da Predição (pred) são salvos na pasta de arquivos de saída (resultados_dir)
+        salva_arrays(output_dir, pred_test=pred_test, prob_test=prob_test)
+        
+    pred_test = np.load(output_dir + 'pred_test.npy')
+    prob_test = np.load(output_dir + 'prob_test.npy')
+    
+    buffers_y_test = {}
+    buffers_pred_test = {}
+    
+    for dist in dist_buffers:
+        # Buffer para Precisão Relaxada
+        if not os.path.exists(os.path.join(input_dir, f'buffer_y_test_{dist}px.npy')):
+            buffers_y_test[dist] = buffer_patches(y_test, dist_cells=dist)
+            np.save(input_dir + f'buffer_y_test_{dist}px.npy', buffers_y_test[dist])
+            
+        # Buffer para Sensibilidade Relaxada
+        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_test_{dist}px.npy')):
+            buffers_pred_test[dist] = buffer_patches(pred_test, dist_cells=dist)
+            np.save(output_dir + f'buffer_pred_test_{dist}px.npy', buffers_pred_test[dist])
+            
+            
+    for dist in dist_buffers:
+        buffers_y_test[dist] = np.load(input_dir + f'buffer_y_test_{dist}px.npy')
+        buffers_pred_test[dist] = np.load(output_dir + f'buffer_pred_test_{dist}px.npy')
+        
+        
+    relaxed_precision_test, relaxed_recall_test, relaxed_f1score_test = {}, {}, {}
+    
+    for dist in dist_buffers:
+        with open(output_dir + f'relaxed_metrics_{dist}px.txt', 'a') as f:
+            relaxed_precision_test[dist], relaxed_recall_test[dist], relaxed_f1score_test[dist] = compute_relaxed_metrics(y_test, 
+                                                                                                       pred_test, buffers_y_test[dist],
+                                                                                                       buffers_pred_test[dist], 
+                                                                                                       nome_conjunto = 'Teste', 
+                                                                                                       print_file=f)
+            
+    
+    x_test = None
+    y_test = None
+    prob_test = None   
+        
+    buffers_y_test = None
+    buffers_pred_test = None
+        
+    gc.collect()
+    
+    # Faz e avalia Mosaicos de Teste
+    # Stride e Dimensões do Tile
+    patch_test_stride = 210 # tem que estabelecer de forma manual de acordo com o stride usado para extrair os patches
+    labels_test_shape = (1500, 1500) # também tem que estabelecer de forma manual de acordo com as dimensões da imagem de referência
+    n_test_tiles = 49 # Número de tiles de teste  
+    
+    # Pasta com os tiles de teste para pegar informações de georreferência
+    test_labels_tiles_dir = r'dataset_massachusetts_mnih/test/maps'
+    labels_paths = [os.path.join(test_labels_tiles_dir, arq) for arq in os.listdir(test_labels_tiles_dir)]
+    
+    # Gera mosaicos e lista com os mosaicos previstos
+    pred_mosaics = gera_mosaicos(output_dir, pred_test, labels_paths, 
+                                 patch_test_stride=patch_test_stride,
+                                 labels_test_shape=labels_test_shape,
+                                 n_test_tiles=n_test_tiles, is_float=False)
+    
+    # Lista e Array dos Mosaicos de Referência
+    y_mosaics = [gdal.Open(y_mosaic_path).ReadAsArray() for y_mosaic_path in labels_paths]
+    y_mosaics = np.array(y_mosaics)[..., np.newaxis]
+    
+    # Array dos Mosaicos de Predição 
+    pred_mosaics = np.array(pred_mosaics)[..., np.newaxis]
+    pred_mosaics = pred_mosaics.astype(np.uint8)
+
+    # Libera memória se for possível
+    pred_test = None
+    gc.collect()
+    
+    # Salva Array dos Mosaicos de Predição
+    if not os.path.exists(os.path.join(input_dir, 'y_mosaics.npy')): salva_arrays(input_dir, y_mosaics=y_mosaics)
+    if not os.path.exists(os.path.join(output_dir, 'pred_mosaics.npy')): salva_arrays(output_dir, pred_mosaics=pred_mosaics)
+    
+    # Lê Mosaicos 
+    y_mosaics = np.load(input_dir + 'y_mosaics.npy')
+    pred_mosaics = np.load(output_dir + 'pred_mosaics.npy')
+        
+    # Buffer dos Mosaicos de Referência e Predição
+    buffers_y_mosaics = {}
+    buffers_pred_mosaics = {}
+    
+    for dist in dist_buffers:
+        # Buffer dos Mosaicos de Referência
+        if not os.path.exists(os.path.join(input_dir, f'buffers_y_mosaics_{dist}px.npy')):
+            buffers_y_mosaics[dist] = buffer_patches(y_mosaics, dist_cells=dist)
+            np.save(input_dir + f'buffer_y_mosaics_{dist}px.npy', buffers_y_mosaics[dist])
+            
+        # Buffer dos Mosaicos de Predição   
+        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_mosaics_{dist}px.npy')):
+            buffers_pred_mosaics[dist] = buffer_patches(pred_mosaics, dist_cells=dist)
+            np.save(output_dir + f'buffer_pred_mosaics_{dist}px.npy', buffers_pred_mosaics[dist])
+    
+    
+    # Lê buffers de Mosaicos
+    for dist in dist_buffers:
+        buffers_y_mosaics[dist] = np.load(input_dir + f'buffer_y_mosaics_{dist}px.npy')
+        buffers_pred_mosaics[dist] = np.load(output_dir + f'buffer_pred_mosaics_{dist}px.npy')  
+        
+        
+    # Avaliação da Qualidade para os Mosaicos de Teste
+    # Relaxed Metrics for mosaics test
+    relaxed_precision_mosaics, relaxed_recall_mosaics, relaxed_f1score_mosaics = {}, {}, {}
+      
+    for dist in dist_buffers:
+        with open(output_dir + f'relaxed_metrics_{dist}px.txt', 'a') as f:
+            relaxed_precision_mosaics[dist], relaxed_recall_mosaics[dist], relaxed_f1score_mosaics[dist] = compute_relaxed_metrics(y_mosaics, 
+                                                                                                            pred_mosaics, buffers_y_mosaics[dist],
+                                                                                                            buffers_pred_mosaics[dist], 
+                                                                                                            nome_conjunto = 'Mosaicos de Teste', 
+                                                                                                            print_file=f)
+            
+    # Libera memória
+    y_mosaics = None
+    pred_mosaics = None
+    
+    buffers_y_mosaics = None
+    buffers_pred_mosaics = None
+    
+    gc.collect()
+            
+    
+    # Save and Return dictionary with the values of precision, recall and F1-Score for all the groups (Train, Validation, Test, Mosaics of Test)
+    if not avalia_train:
+        relaxed_precision_train = None
+        relaxed_recall_train = None
+        relaxed_f1score_train = None        
+        
     dict_results = {
         'relaxed_precision_train': relaxed_precision_train, 'relaxed_recall_train': relaxed_recall_train, 'relaxed_f1score_train': relaxed_f1score_train,
         'relaxed_precision_valid': relaxed_precision_valid, 'relaxed_recall_valid': relaxed_recall_valid, 'relaxed_f1score_valid': relaxed_f1score_valid,
@@ -2763,7 +3118,7 @@ def mode(ndarray, axis=0):
 
 
 
-def blur_x_patches(x_train, y_train, subpatch_size, k, std_blur, model):
+def blur_x_patches(x_train, y_train, dim, k, blur, model):
     '''
     Faz o blur, em cada patch, em k subpaches. Preferencialmente naqueles que contêm pelo menos um pixel de estrada.
     Caso não houver subpatches suficientes subpatches com pelos um pixel de estrada, então faz o blur naqueles que não 
@@ -2775,11 +3130,11 @@ def blur_x_patches(x_train, y_train, subpatch_size, k, std_blur, model):
         Numpy array (patches, height, width, channels).
     y_train : TYPE
         Numpy array (patches, height, width, channels).
-    subpatch_size : TYPE
+    dim : TYPE
         Tamanho do subpatch
     k : TYPE
         Quantos subpatches aplica o blur.
-    std_blur : TYPE
+    blur : TYPE
         Desvio Padrão do blur.
 
     Returns
@@ -2795,15 +3150,15 @@ def blur_x_patches(x_train, y_train, subpatch_size, k, std_blur, model):
     n_channels = x_train.shape[-1]
     n_patches = x_train.shape[0]
     pixels_patch = patch_size*patch_size
-    pixels_subpatch = subpatch_size*subpatch_size
+    pixels_subpatch = dim*dim
 
     if k > pixels_patch//pixels_subpatch:
         raise Exception('k é maior que o número total de subpatches com o tamanho subpatch_size. '
                         'Diminua o tamanho do k ou diminua o tamanho do subpatch')
         
     # Variáveis para extração dos subpatches (tiles) a partir dos patches
-    sizes = [1, subpatch_size, subpatch_size, 1]
-    strides = [1, subpatch_size, subpatch_size, 1]
+    sizes = [1, dim, dim, 1]
+    strides = [1, dim, dim, 1]
     rates = [1, 1, 1, 1]
     padding = 'VALID'
     
@@ -2816,11 +3171,11 @@ def blur_x_patches(x_train, y_train, subpatch_size, k, std_blur, model):
     n_vertical_subpatches = subpatches_x_train.shape[1]
     n_horizontal_subpatches = subpatches_x_train.shape[2]
     subpatches_x_train = subpatches_x_train.reshape((n_patches, n_vertical_subpatches*n_horizontal_subpatches, 
-                                                     subpatch_size, subpatch_size, n_channels))
+                                                     dim, dim, n_channels))
     
     subpatches_y_train = tf.image.extract_patches(y_train, sizes=sizes, strides=strides, rates=rates, padding=padding).numpy()
     subpatches_y_train = subpatches_y_train.reshape((n_patches, n_vertical_subpatches*n_horizontal_subpatches, 
-                                                     subpatch_size, subpatch_size, 1)) # Só um canal para referência
+                                                     dim, dim, 1)) # Só um canal para referência
     
 
     
@@ -2862,7 +3217,7 @@ def blur_x_patches(x_train, y_train, subpatch_size, k, std_blur, model):
         selected_subpatches_x_train_i_patch = subpatches_x_train[i_patch][indices_selected_subpatches]
         
         # Aplica filtro aos subpatches 
-        selected_subpatches_x_train_i_patch_blurred = gaussian_filter(selected_subpatches_x_train_i_patch.astype(np.float32), sigma=(0, std_blur, std_blur, 0))
+        selected_subpatches_x_train_i_patch_blurred = gaussian_filter(selected_subpatches_x_train_i_patch.astype(np.float32), sigma=(0, blur, blur, 0))
         
         # Substitui subpatches pelos respectivos subpatches com blur no array original de subpatches
         subpatches_x_train[i_patch][indices_selected_subpatches] = selected_subpatches_x_train_i_patch_blurred
@@ -2877,7 +3232,7 @@ def blur_x_patches(x_train, y_train, subpatch_size, k, std_blur, model):
         sub = subpatches_x_train[i_patch]
     
         # Divide em linhas    
-        rows = np.split(sub, patch_size//subpatch_size, axis=0)
+        rows = np.split(sub, patch_size//dim, axis=0)
         
         # Concatena linhas
         rows = [tf.concat(tf.unstack(x), axis=1).numpy() for x in rows]
@@ -3048,3 +3403,19 @@ def plota_curva_precision_recall_relaxada(y, prob, buffer_y, buffer_px=3, num_po
         
         
     return precision_scores, recall_scores, intersection_found
+
+
+
+
+def treina_com_subpatches(filenames_train_list, filenames_valid_list, filenames_test_list, model_dir):
+    # Treina modelos
+    for (name_train, name_valid, name_test) in zip(filenames_train_list, filenames_valid_list, filenames_test_list):
+        # Move arquivo para diretório de modelos
+        shutil.copy(name_train, model_dir + 'x_train.npy')
+        shutil.copy(name_valid, model_dir + 'x_valid.npy')
+        shutil.copy(name_test, model_dir + 'x_test.npy')
+        
+        # Treina modelo com os dados
+        output_dir = os.path.dirname(name_train)
+        treina_modelo(model_dir, output_dir, epochs=1000, early_loss=False, model_type='resunet',
+                      loss='cross', lr_decay=True)
