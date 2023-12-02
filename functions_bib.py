@@ -624,7 +624,7 @@ def train_unet(net, x_train, y_train, x_valid, y_valid, batch_size, epochs, earl
     if lr_decay:
         initial_lrate = 0.001
         drop = 0.1
-        epochs_drop = 20.0
+        epochs_drop = 30.0
         print(f'Initial Learning Rate={initial_lrate}, Drop={drop}, Epochs Drop={epochs_drop}')        
         def step_decay(epoch):
             lrate = initial_lrate * math.pow(drop, math.floor((1+epoch)/epochs_drop))
@@ -785,8 +785,9 @@ def show_graph_loss_accuracy(history, accuracy_position, metric_name = 'accuracy
         
     if save:
         plt.savefig(save_path + save_name)
-
-    plt.show()
+        plt.close()
+    else:
+        plt.show(block=False)
     
 
     
@@ -1343,7 +1344,7 @@ def filtra_tiles_estradas(img_tiles, ref_tiles, perc_corte):
     contagem_de_estrada = np.array([np.count_nonzero(ref_tiles[i] == 1) for i in range(ref_tiles.shape[0])])
     
     # Esse array são os índices dos tiles que tem número de pixels de estrada maior que o limiar
-    indices_maior = np.where(contagem_de_estrada >= pixels_corte)[0]  
+    indices_maior = np.where(contagem_de_estrada > pixels_corte)[0]  
     
     # Filtra arrays
     img_tiles_filt = img_tiles[indices_maior]
@@ -1587,7 +1588,7 @@ def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet cha
 
     # Parâmetros do Early Stopping
     early_stopping = early_stopping
-    early_stopping_epochs = 100
+    early_stopping_epochs = 50
     #early_stopping_epochs = 2
     #early_stopping_delta = 0.001 # aumento delta (percentual de diminuição da perda) equivalente a 0.1%
     early_stopping_delta = 0.001 # aumento delta (percentual de diminuição da perda) equivalente a 0.1%
@@ -1814,354 +1815,6 @@ def gera_graficos(metrics_dirs_list, lista_nomes_exp, save_path=r''):
                                  'Teste', save=True, save_path=save_path)
     plota_resultado_experimentos(precision_mosaicos_teste, recall_mosaicos_teste, f1score_mosaicos_teste, lista_nomes_exp, 
                                  'Mosaicos de Teste', save=True, save_path=save_path)
-
-
-"""
-# Avalia um modelo segundo conjuntos de treino, validação, teste e mosaicos de teste
-# Retorna as métricas de precisão, recall e f1-score relaxados
-# Além disso constroi os mosaicos de resultado 
-# Etapa 1 se refere ao processamento no qual a entrada do pós-processamento é a predição do modelo
-# Etapa 2 ao processamento no qual a entrada do pós-processamento é a imagem original mais a predição do modelo
-# Etapa 3 ao processamento no qual a entrada do pós-processamento é a imagem original mais a predição dela com blur gaussiano 
-# Etapa 4 ao processamento no qual a entrada do pós-processamento é a imagem original com blur gaussiano em certos subpatches
-# Etapa 5 se refere ao pós-processamento   
-def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score', 
-                  etapa=3, dist_buffers = [3], std_blur = 0.4, subpatch_size=32,
-                  k=3):
-    metric_name = metric_name
-    etapa = etapa
-    dist_buffers = dist_buffers
-    std_blur = std_blur
-    
-    x_train = np.load(input_dir + 'x_train.npy')
-    y_train = np.load(input_dir + 'y_train.npy')
-    x_valid = np.load(input_dir + 'x_valid.npy')
-    y_valid = np.load(input_dir + 'y_valid.npy')
-    
-    # Copia y_train e y_valid para diretório de saída, pois eles serão usados depois como entrada (rótulos)
-    # para o pós-processamento
-    if etapa==1 or etapa==2 or etapa==3 or etapa==4:
-        shutil.copy(input_dir + 'y_train.npy', output_dir + 'y_train.npy')
-        shutil.copy(input_dir + 'y_valid.npy', output_dir + 'y_valid.npy')
-        
-        
-    # Nome do modelo salvo
-    best_model_filename = 'best_model'
-    
-    # Lê histórico
-    with open(output_dir + 'history_pickle_' + best_model_filename + '.pickle', "rb") as fp:   
-        history = pickle.load(fp)
-    
-    # Show and save history
-    show_graph_loss_accuracy(np.asarray(history), 1, metric_name = metric_name, save=True, save_path=output_dir)
-    
-    # Load model
-    model = load_model(output_dir + best_model_filename + '.h5', compile=False)
-    
-    
-    # Test the model over training and validation data (outputs result if at least one of the files does not exist)
-    if not os.path.exists(os.path.join(output_dir, 'pred_train.npy')) or \
-       not os.path.exists(os.path.join(output_dir, 'prob_train.npy')) or \
-       not os.path.exists(os.path.join(output_dir, 'pred_valid.npy')) or \
-       not os.path.exists(os.path.join(output_dir, 'prob_valid.npy')):
-        pred_train, prob_train = Test_Step(model, x_train, 2)
-        pred_valid, prob_valid = Test_Step(model, x_valid, 2)
-        
-        # Probabilidade apenas da classe 1 (de estradas)
-        prob_train = prob_train[..., 1:2] 
-        
-        
-        
-        prob_valid = prob_valid[..., 1:2]
-        
-        # Converte para tipos que ocupam menos espaço
-        pred_train = pred_train.astype(np.uint8)
-        prob_train = prob_train.astype(np.float16)
-        pred_valid = pred_valid.astype(np.uint8)
-        prob_valid = prob_valid.astype(np.float16)
-        
-        # Salva arrays de predição do Treinamento e Validação    
-        salva_arrays(output_dir, pred_train=pred_train, prob_train=prob_train, 
-                     pred_valid=pred_valid, prob_valid=prob_valid)
-    
-    # Lê arrays de predição do Treinamento e Validação (para o caso deles já terem sido gerados)  
-    pred_train = np.load(output_dir + 'pred_train.npy')
-    prob_train = np.load(output_dir + 'prob_train.npy')
-    pred_valid = np.load(output_dir + 'pred_valid.npy')
-    prob_valid = np.load(output_dir + 'prob_valid.npy')
-    
-    
-    # Antigo: Copia predições pred_train e pred_valid com o nome de x_train e x_valid no diretório de saída,
-    # Antigo: pois serão usados como dados de entrada para o pós-processamento
-    # Faz concatenação de x_train com pred_train e salva no diretório de saída, com o nome de x_train,
-    # para ser usado como entrada para o pós-processamento. Faz procedimento semelhante com x_valid
-    if etapa == 1:
-        if not os.path.exists(os.path.join(output_dir, 'x_train.npy')) or \
-            not os.path.exists(os.path.join(output_dir, 'x_valid.npy')):
-            shutil.copy(output_dir + 'pred_train.npy', output_dir + 'x_train.npy')
-            shutil.copy(output_dir + 'pred_valid.npy', output_dir + 'x_valid.npy')
-    
-    if etapa == 2:
-        if not os.path.exists(os.path.join(output_dir, 'x_train.npy')) or \
-            not os.path.exists(os.path.join(output_dir, 'x_valid.npy')):
-            x_train_new = np.concatenate((x_train, pred_train), axis=-1)
-            x_valid_new = np.concatenate((x_valid, pred_valid), axis=-1)
-            salva_arrays(output_dir, x_train=x_train_new, x_valid=x_valid_new)
-        
-    if etapa == 3:
-        if not os.path.exists(os.path.join(output_dir, 'x_train.npy')) or \
-            not os.path.exists(os.path.join(output_dir, 'x_valid.npy')):
-            print('Fazendo Blur nas imagens de treino e validação e gerando as predições')
-            x_train_blur = gaussian_filter(x_train.astype(np.float32), sigma=(0 ,std_blur, std_blur, 0)).astype(np.float16)
-            x_valid_blur = gaussian_filter(x_valid.astype(np.float32), sigma=(0 ,std_blur, std_blur, 0)).astype(np.float16)
-            pred_train_blur, _ = Test_Step(model, x_train_blur, 2)
-            pred_valid_blur, _ = Test_Step(model, x_valid_blur, 2)
-            x_train_new = np.concatenate((x_train, pred_train_blur), axis=-1)
-            x_valid_new = np.concatenate((x_valid, pred_valid_blur), axis=-1)
-            salva_arrays(output_dir, x_train=x_train_new, x_valid=x_valid_new)
-            
-    if etapa == 4:
-        if not os.path.exists(os.path.join(output_dir, 'x_train.npy')) or \
-            not os.path.exists(os.path.join(output_dir, 'x_valid.npy')):
-            print('Fazendo Blur nas imagens de treino e validação (em subpatches) e gerando as predições')
-            x_train_blur, pred_train_blur = blur_x_patches(x_train, y_train, subpatch_size, k, std_blur, model)
-            x_valid_blur, pred_valid_blur = blur_x_patches(x_valid, y_valid, subpatch_size, k, std_blur, model)
-            x_train_new = np.concatenate((x_train, pred_train_blur), axis=-1).astype(np.float16)
-            x_valid_new = np.concatenate((x_valid, pred_valid_blur), axis=-1).astype(np.float16)
-            salva_arrays(output_dir, x_train=x_train_new, x_valid=x_valid_new)
-    
-        
-    # Faz os Buffers necessários, para treino e validação, nas imagens 
-    
-    # Precisão Relaxada - Buffer na imagem de rótulos
-    # Sensibilidade Relaxada - Buffer na imagem extraída
-    # F1-Score Relaxado - É obtido através da Precisão e Sensibilidade Relaxadas
-    
-    buffers_y_train = {}
-    buffers_y_valid = {}
-    buffers_pred_train = {}
-    buffers_pred_valid = {}
-    
-    for dist in dist_buffers:
-        # Buffers para Precisão Relaxada
-        if not os.path.exists(os.path.join(input_dir, f'buffer_y_train_{dist}px.npy')): 
-            buffers_y_train[dist] = buffer_patches(y_train, dist_cells=dist)
-            np.save(input_dir + f'buffer_y_train_{dist}px.npy', buffers_y_train[dist])
-            
-        if not os.path.exists(os.path.join(input_dir, f'buffer_y_valid_{dist}px.npy')): 
-            buffers_y_valid[dist] = buffer_patches(y_valid, dist_cells=dist)
-            np.save(input_dir + f'buffer_y_valid_{dist}px.npy', buffers_y_valid[dist])
-        
-        # Buffers para Sensibilidade Relaxada
-        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_train_{dist}px.npy')):
-            buffers_pred_train[dist] = buffer_patches(pred_train, dist_cells=dist)
-            np.save(output_dir + f'buffer_pred_train_{dist}px.npy', buffers_pred_train[dist])
-            
-        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_valid_{dist}px.npy')): 
-            buffers_pred_valid[dist] = buffer_patches(pred_valid, dist_cells=dist)
-            np.save(output_dir + f'buffer_pred_valid_{dist}px.npy', buffers_pred_valid[dist])
-    
-    
-    # Lê buffers de arrays de predição do Treinamento e Validação
-    for dist in dist_buffers:
-        buffers_y_train[dist] = np.load(input_dir + f'buffer_y_train_{dist}px.npy')
-        buffers_y_valid[dist] = np.load(input_dir + f'buffer_y_valid_{dist}px.npy')
-        buffers_pred_train[dist] = np.load(output_dir + f'buffer_pred_train_{dist}px.npy')
-        buffers_pred_valid[dist] = np.load(output_dir + f'buffer_pred_valid_{dist}px.npy')
-        
-        
-    # Relaxed Metrics for training
-    relaxed_precision_train, relaxed_recall_train, relaxed_f1score_train = {}, {}, {}
-    relaxed_precision_valid, relaxed_recall_valid, relaxed_f1score_valid = {}, {}, {}
-    
-    
-    for dist in dist_buffers:
-        with open(output_dir + f'relaxed_metrics_{dist}px.txt', 'a') as f:
-            relaxed_precision_train[dist], relaxed_recall_train[dist], relaxed_f1score_train[dist] = compute_relaxed_metrics(y_train, 
-                                                                                                       pred_train, buffers_y_train[dist],
-                                                                                                       buffers_pred_train[dist], 
-                                                                                                       nome_conjunto = 'Treino', 
-                                                                                                       print_file=f)        
-            # Relaxed Metrics for validation
-            relaxed_precision_valid[dist], relaxed_recall_valid[dist], relaxed_f1score_valid[dist] = compute_relaxed_metrics(y_valid, 
-                                                                                                           pred_valid, buffers_y_valid[dist],
-                                                                                                           buffers_pred_valid[dist],
-                                                                                                           nome_conjunto = 'Validação',
-                                                                                                           print_file=f)   
-            
-    
-    # Lê arrays referentes aos patches de teste
-    x_test = np.load(input_dir + 'x_test.npy')
-    y_test = np.load(input_dir + 'y_test.npy')
-    
-    # Copia y_test para diretório de saída, pois ele será usado como entrada (rótulo) para o pós-processamento
-    if etapa==1 or etapa==2 or etapa==3 or etapa==4:
-        shutil.copy(input_dir + 'y_test.npy', output_dir + 'y_test.npy')
-        
-    
-    # Test the model over test data (outputs result if at least one of the files does not exist)
-    if not os.path.exists(os.path.join(output_dir, 'pred_test.npy')) or \
-       not os.path.exists(os.path.join(output_dir, 'prob_test.npy')):
-        pred_test, prob_test = Test_Step(model, x_test, 2)
-        
-        prob_test = prob_test[..., 1:2] # Essa é a probabilidade de prever estrada (valor de pixel 1)
-    
-        # Converte para tipos que ocupam menos espaço
-        pred_test = pred_test.astype(np.uint8)
-        prob_test = prob_test.astype(np.float16)
-        
-        # Salva arrays de predição do Teste. Arquivos da Predição (pred) são salvos na pasta de arquivos de saída (resultados_dir)
-        salva_arrays(output_dir, pred_test=pred_test, prob_test=prob_test)
-        
-        
-        
-    # Lê arrays de predição do Teste
-    pred_test = np.load(output_dir + 'pred_test.npy')
-    prob_test = np.load(output_dir + 'prob_test.npy')
-    
-    # Antigo: Copia predição pred_test com o nome de x_test no diretório de saída,
-    # Antigo: pois será usados como dado de entrada no pós-processamento
-    # Faz concatenação de x_test com pred_test e salva no diretório de saída, com o nome de x_test,
-    # para ser usado como entrada para o pós-processamento.
-    if etapa == 1:
-        if not os.path.exists(os.path.join(output_dir, 'x_test.npy')):
-            shutil.copy(output_dir + 'pred_test.npy', output_dir + 'x_test.npy')
-    
-    if etapa == 2:
-        if not os.path.exists(os.path.join(output_dir, 'x_test.npy')):
-            x_test_new = np.concatenate((x_test, pred_test), axis=-1)
-            salva_arrays(output_dir, x_test=x_test_new)
-        
-    if etapa == 3:
-        if not os.path.exists(os.path.join(output_dir, 'x_test.npy')):
-            print('Fazendo Blur nas imagens de teste e gerando as predições')
-            x_test_blur = gaussian_filter(x_test.astype(np.float32), sigma=(0 ,std_blur, std_blur, 0)).astype(np.float16)
-            pred_test_blur, _ = Test_Step(model, x_test_blur, 2)
-            x_test_new = np.concatenate((x_test, pred_test_blur), axis=-1)
-            salva_arrays(output_dir, x_test=x_test_new)
-            
-    if etapa == 4:
-        if not os.path.exists(os.path.join(output_dir, 'x_test.npy')):
-            print('Fazendo Blur nas imagens de teste (em subpatches) e gerando as predições')
-            x_test_blur, pred_test_blur = blur_x_patches(x_test, y_test, subpatch_size, k, std_blur, model)
-            x_test_new = np.concatenate((x_test, pred_test_blur), axis=-1)
-            salva_arrays(output_dir, x_test=x_test_new)
-            
-    # Faz os Buffers necessários, para teste, nas imagens
-    
-    buffers_y_test = {}
-    buffers_pred_test = {}
-    
-    for dist in dist_buffers:
-        # Buffer para Precisão Relaxada
-        if not os.path.exists(os.path.join(input_dir, f'buffer_y_test_{dist}px.npy')):
-            buffers_y_test[dist] = buffer_patches(y_test, dist_cells=dist)
-            np.save(input_dir + f'buffer_y_test_{dist}px.npy', buffers_y_test[dist])
-            
-        # Buffer para Sensibilidade Relaxada
-        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_test_{dist}px.npy')):
-            buffers_pred_test[dist] = buffer_patches(pred_test, dist_cells=dist)
-            np.save(output_dir + f'buffer_pred_test_{dist}px.npy', buffers_pred_test[dist])
-            
-            
-    # Lê buffers de arrays de predição do Teste
-    for dist in dist_buffers:
-        buffers_y_test[dist] = np.load(input_dir + f'buffer_y_test_{dist}px.npy')
-        buffers_pred_test[dist] = np.load(output_dir + f'buffer_pred_test_{dist}px.npy')
-        
-        
-    # Relaxed Metrics for test
-    relaxed_precision_test, relaxed_recall_test, relaxed_f1score_test = {}, {}, {}
-    
-    
-    for dist in dist_buffers:
-        with open(output_dir + f'relaxed_metrics_{dist}px.txt', 'a') as f:
-            relaxed_precision_test[dist], relaxed_recall_test[dist], relaxed_f1score_test[dist] = compute_relaxed_metrics(y_test, 
-                                                                                                       pred_test, buffers_y_test[dist],
-                                                                                                       buffers_pred_test[dist], 
-                                                                                                       nome_conjunto = 'Teste', 
-                                                                                                       print_file=f)
-    
-    # Stride e Dimensões do Tile
-    patch_test_stride = 210 # tem que estabelecer de forma manual de acordo com o stride usado para extrair os patches
-    labels_test_shape = (1500, 1500) # também tem que estabelecer de forma manual de acordo com as dimensões da imagem de referência
-    n_test_tiles = 49 # Número de tiles de teste  
-    
-    # Pasta com os tiles de teste para pegar informações de georreferência
-    test_labels_tiles_dir = r'dataset_massachusetts_mnih/test/maps'
-    labels_paths = [os.path.join(test_labels_tiles_dir, arq) for arq in os.listdir(test_labels_tiles_dir)]
-    
-    # Gera mosaicos e lista com os mosaicos previstos
-    pred_test_mosaic_list = gera_mosaicos(output_dir, pred_test, labels_paths, 
-                                          patch_test_stride=patch_test_stride,
-                                          labels_test_shape=labels_test_shape,
-                                          n_test_tiles=n_test_tiles, is_float=False)
-    
-    # Lista e Array dos Mosaicos de Referência
-    y_mosaics_list = [gdal.Open(y_mosaic_path).ReadAsArray() for y_mosaic_path in labels_paths]
-    y_mosaics = np.array(y_mosaics_list)[..., np.newaxis]
-    
-    # Array dos Mosaicos de Predição 
-    pred_mosaics = np.array(pred_test_mosaic_list)[..., np.newaxis]
-    pred_mosaics = pred_mosaics.astype(np.uint8)
-    
-    # Salva Array dos Mosaicos de Predição
-    if not os.path.exists(os.path.join(input_dir, 'y_mosaics.npy')): salva_arrays(input_dir, y_mosaics=y_mosaics)
-    if not os.path.exists(os.path.join(output_dir, 'pred_mosaics.npy')): salva_arrays(output_dir, pred_mosaics=pred_mosaics)
-    
-    # Lê Mosaicos 
-    y_mosaics = np.load(input_dir + 'y_mosaics.npy')
-    pred_mosaics = np.load(output_dir + 'pred_mosaics.npy')
-        
-    
-    # Buffer dos Mosaicos de Referência e Predição
-    buffers_y_mosaics = {}
-    buffers_pred_mosaics = {}
-    
-    for dist in dist_buffers:
-        # Buffer dos Mosaicos de Referência
-        if not os.path.exists(os.path.join(input_dir, f'buffers_y_mosaics_{dist}px.npy')):
-            buffers_y_mosaics[dist] = buffer_patches(y_mosaics, dist_cells=dist)
-            np.save(input_dir + f'buffer_y_mosaics_{dist}px.npy', buffers_y_mosaics[dist])
-            
-        # Buffer dos Mosaicos de Predição   
-        if not os.path.exists(os.path.join(output_dir, f'buffer_pred_mosaics_{dist}px.npy')):
-            buffers_pred_mosaics[dist] = buffer_patches(pred_mosaics, dist_cells=dist)
-            np.save(output_dir + f'buffer_pred_mosaics_{dist}px.npy', buffers_pred_mosaics[dist])
-    
-    
-    # Lê buffers de Mosaicos
-    for dist in dist_buffers:
-        buffers_y_mosaics[dist] = np.load(input_dir + f'buffer_y_mosaics_{dist}px.npy')
-        buffers_pred_mosaics[dist] = np.load(output_dir + f'buffer_pred_mosaics_{dist}px.npy')  
-        
-        
-    # Avaliação da Qualidade para os Mosaicos de Teste
-    # Relaxed Metrics for mosaics test
-    relaxed_precision_mosaics, relaxed_recall_mosaics, relaxed_f1score_mosaics = {}, {}, {}
-      
-    for dist in dist_buffers:
-        with open(output_dir + f'relaxed_metrics_{dist}px.txt', 'a') as f:
-            relaxed_precision_mosaics[dist], relaxed_recall_mosaics[dist], relaxed_f1score_mosaics[dist] = compute_relaxed_metrics(y_mosaics, 
-                                                                                                       pred_mosaics, buffers_y_mosaics[dist],
-                                                                                                       buffers_pred_mosaics[dist], 
-                                                                                                       nome_conjunto = 'Mosaicos de Teste', 
-                                                                                                       print_file=f)
-            
-    
-    # Save and Return dictionary with the values of precision, recall and F1-Score for all the groups (Train, Validation, Test, Mosaics of Test)
-    dict_results = {
-        'relaxed_precision_train': relaxed_precision_train, 'relaxed_recall_train': relaxed_recall_train, 'relaxed_f1score_train': relaxed_f1score_train,
-        'relaxed_precision_valid': relaxed_precision_valid, 'relaxed_recall_valid': relaxed_recall_valid, 'relaxed_f1score_valid': relaxed_f1score_valid,
-        'relaxed_precision_test': relaxed_precision_test, 'relaxed_recall_test': relaxed_recall_test, 'relaxed_f1score_test': relaxed_f1score_test,
-        'relaxed_precision_mosaics': relaxed_precision_mosaics, 'relaxed_recall_mosaics': relaxed_recall_mosaics, 'relaxed_f1score_mosaics': relaxed_f1score_mosaics             
-        }
-    
-    with open(output_dir + 'resultados_metricas' + '.pickle', "wb") as fp: # Salva dicionário com métricas do resultado do experimento
-        pickle.dump(dict_results, fp)
-    
-    return dict_results
-"""
 
 
 # Avalia um modelo segundo conjuntos de treino, validação, teste e mosaicos de teste
@@ -2393,6 +2046,7 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
     # Pasta com os tiles de teste para pegar informações de georreferência
     test_labels_tiles_dir = r'dataset_massachusetts_mnih/test/maps'
     labels_paths = [os.path.join(test_labels_tiles_dir, arq) for arq in os.listdir(test_labels_tiles_dir)]
+    labels_paths.sort()
     
     # Gera mosaicos e lista com os mosaicos previstos
     pred_mosaics = gera_mosaicos(output_dir, pred_test, labels_paths, 
@@ -3191,27 +2845,16 @@ def blur_x_patches(x_train, y_train, dim, k, blur, model):
         # Array com índices dos subpatches que tem número de pixels de estrada maior que pixels_corte
         indices_maior = np.where(contagem_estrada > pixels_corte)[0]
         
-        # Sorteia k subpatches daqueles que são maiores que 0
-        try:
-            indices_selected_subpatches = random.sample(list(indices_maior), k)
-            indices_selected_subpatches.sort() # Coloca em ordem crescente
-        except ValueError:
-            # Se k for maior que o Número de subpatches que tem número de pixels de estrada maior que 0, 
-            # o que é o caso, teremos que adicionar subpatches
-            # que contém somente 0s
-            indices_subpatches = np.indices(contagem_estrada.shape)[0]
-            
-            len_indices_subpatches = len(indices_subpatches)
-                
-            len_indices_maior = len(indices_maior)
-                
-            diferenca_k_indices_maior = k - len_indices_maior
-            
-            indices_selected_subpatches_1 = random.sample(list(indices_maior), len_indices_maior)
-            indices_selected_subpatches_2 = random.sample(list(set(indices_subpatches) - set(indices_maior)), diferenca_k_indices_maior)
-            indices_selected_subpatches = indices_selected_subpatches_1 + indices_selected_subpatches_2
-            
-            indices_selected_subpatches.sort() # Coloca em ordem crescente
+        # Coloca array dos índices maiores em ordem decrescente
+        indices_maior = np.sort(indices_maior)[::-1]
+        
+        # Pega os k subpatches que tem mais pixels de estrada e 
+        # que tem quantidade de pixels de estrada maior que 0
+        indices_selected_subpatches = indices_maior[:k]
+        
+        # Converte em lista e coloca em ordem crescente
+        indices_selected_subpatches = list(indices_selected_subpatches)
+        indices_selected_subpatches.sort()
             
         # Cria array com subpatches escolhidos
         selected_subpatches_x_train_i_patch = subpatches_x_train[i_patch][indices_selected_subpatches]
@@ -3419,3 +3062,78 @@ def treina_com_subpatches(filenames_train_list, filenames_valid_list, filenames_
         output_dir = os.path.dirname(name_train)
         treina_modelo(model_dir, output_dir, epochs=1000, early_loss=False, model_type='resunet',
                       loss='cross', lr_decay=True)
+        
+        
+# Etapa 1 se refere ao processamento no qual a entrada do pós-processamento é a predição do modelo
+# Etapa 2 ao processamento no qual a entrada do pós-processamento é a imagem original mais a predição do modelo
+# Etapa 5 se refere ao pós-processamento
+def gera_dados_segunda_rede(input_dir, output_dir, etapa=2):
+    x_train = np.load(input_dir + 'x_train.npy')
+    x_valid = np.load(input_dir + 'x_valid.npy')
+    
+    # Copia y_train e y_valid para diretório de saída, pois eles serão usados depois como entrada (rótulos)
+    # para o pós-processamento
+    if etapa==1 or etapa==2 or etapa==3 or etapa==4:
+        shutil.copy(input_dir + 'y_train.npy', output_dir + 'y_train.npy')
+        shutil.copy(input_dir + 'y_valid.npy', output_dir + 'y_valid.npy')
+        
+    # Predições
+    if not os.path.exists(os.path.join(output_dir, 'pred_train.npy')):
+        # Nome do modelo salvo
+        best_model_filename = 'best_model'
+        
+        # Load model
+        model = load_model(output_dir + best_model_filename + '.h5', compile=False)        
+        
+        # Faz predição
+        pred_train, _ = Test_Step(model, x_train, 2)
+        
+        # Converte para tipo que ocupa menos espaço e salva
+        pred_train = pred_train.astype(np.uint8)
+        salva_arrays(output_dir, pred_train=pred_train)
+    
+    pred_train = np.load(output_dir + 'pred_train.npy')
+    pred_valid = np.load(output_dir + 'pred_valid.npy')
+        
+    # Forma e Copia para Nova Pasta o Novo x_train e x_valid
+    if etapa == 1:
+        if not os.path.exists(os.path.join(output_dir, 'x_train.npy')) or \
+            not os.path.exists(os.path.join(output_dir, 'x_valid.npy')):
+            shutil.copy(output_dir + 'pred_train.npy', output_dir + 'x_train.npy')
+            shutil.copy(output_dir + 'pred_valid.npy', output_dir + 'x_valid.npy')
+    
+    if etapa == 2:
+        if not os.path.exists(os.path.join(output_dir, 'x_train.npy')) or \
+            not os.path.exists(os.path.join(output_dir, 'x_valid.npy')):
+            x_train_new = np.concatenate((x_train, pred_train), axis=-1)
+            x_valid_new = np.concatenate((x_valid, pred_valid), axis=-1)
+            salva_arrays(output_dir, x_train=x_train_new, x_valid=x_valid_new)
+            
+    # Libera memória
+    del x_train, x_valid, pred_train, pred_valid
+    gc.collect()
+            
+            
+    # Lê arrays referentes aos patches de teste
+    x_test = np.load(input_dir + 'x_test.npy')
+    
+    # Copia y_test para diretório de saída, pois ele será usado como entrada (rótulo) para o pós-processamento
+    if etapa==1 or etapa==2 or etapa==3 or etapa==4:
+        shutil.copy(input_dir + 'y_test.npy', output_dir + 'y_test.npy')
+        
+    # Predições
+    pred_test = np.load(output_dir + 'pred_test.npy')
+        
+    # Forma e Copia para Nova Pasta o Novo x_test
+    if etapa == 1:
+        if not os.path.exists(os.path.join(output_dir, 'x_test.npy')):
+            shutil.copy(output_dir + 'pred_test.npy', output_dir + 'x_test.npy')
+
+    if etapa == 2:
+        if not os.path.exists(os.path.join(output_dir, 'x_test.npy')):
+            x_test_new = np.concatenate((x_test, pred_test), axis=-1)
+            salva_arrays(output_dir, x_test=x_test_new)
+            
+    # Libera memória
+    del x_test, pred_test
+    gc.collect()

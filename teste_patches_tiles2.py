@@ -18,30 +18,22 @@ from functions_bib import buffer_patches, save_raster_reference, Test_Step
 from functions_bib import extract_tiles, filtra_tiles_estradas, copia_tiles_filtrados, extract_patches_from_tiles
 
 
-
-
-# Pasta onde os modelos vão ser lidos/escritos
-if not os.path.exists('modelos'):
-    os.mkdir('modelos')
-
-root_path = 'modelos/'
-
 # Images Directories
 train_test_dir = 'entrada1/'
-resultados_dir = 'resultados1/'
 
 
 # %% Extrai patches (Info)
 
 # Tamanho do patch. Patch é quadrado (altura=largura)
-patch_size = 128
+patch_size = 224
 
 # Stride do Patch. Com um stride menor que a largura do patch há sobreposição entre os patches
 # 25% de sobreposição entre patches
-patch_stride = patch_size - (patch_size // 4)
+patch_overlap = 0.0625 # In Mnih the overlap is 14 pixels. 224*0.0625 = 14
+patch_stride = patch_size - int(patch_size * patch_overlap)
 
 # Número de canais da imagem/patch
-image_channels = 4
+image_channels = 3
 
 # Dimensões do patch
 input_shape = (patch_size, patch_size, image_channels)
@@ -51,14 +43,14 @@ input_shape = (patch_size, patch_size, image_channels)
 
 # %% Varre diretório de treino e de validação para abrir os tiles dos quais os patches serão extraídos
 
-train_imgs_tiles_dir = r'new_teste_tiles\imgs\train'
-valid_imgs_tiles_dir = r'new_teste_tiles\imgs\valid'
-train_labels_tiles_dir = r'new_teste_tiles\masks\train'
-valid_labels_tiles_dir = r'new_teste_tiles\masks\valid'
-test_imgs_tiles_dir = r'new_teste_tiles\imgs\test'
-test_labels_tiles_dir = r'new_teste_tiles\masks\test'
+train_imgs_tiles_dir = r'dataset_massachusetts_mnih/train/input'
+valid_imgs_tiles_dir = r'dataset_massachusetts_mnih/validation/input'
+train_labels_tiles_dir = r'dataset_massachusetts_mnih/train/maps'
+valid_labels_tiles_dir = r'dataset_massachusetts_mnih/validation/maps'
+test_imgs_tiles_dir = r'dataset_massachusetts_mnih/test/input'
+test_labels_tiles_dir = r'dataset_massachusetts_mnih/test/maps'
 #newroads_valid_labels_tiles_dir = r'new_teste_tiles\masks\valid_new_roads'
-newroads_test_labels_tiles_dir = r'new_teste_tiles\masks\test_new_roads'
+#newroads_test_labels_tiles_dir = r'new_teste_tiles\masks\test_new_roads'
 
 train_imgs_tiles = [os.path.join(train_imgs_tiles_dir, arq) for arq in os.listdir(train_imgs_tiles_dir)]
 valid_imgs_tiles = [os.path.join(valid_imgs_tiles_dir, arq) for arq in os.listdir(valid_imgs_tiles_dir)]
@@ -68,16 +60,16 @@ train_labels_tiles = [os.path.join(train_labels_tiles_dir, arq) for arq in os.li
 valid_labels_tiles = [os.path.join(valid_labels_tiles_dir, arq) for arq in os.listdir(valid_labels_tiles_dir)]
 test_labels_tiles = [os.path.join(test_labels_tiles_dir, arq) for arq in os.listdir(test_labels_tiles_dir)]
 #newroads_valid_labels_tiles = [os.path.join(newroads_valid_labels_tiles_dir, arq) for arq in os.listdir(newroads_valid_labels_tiles_dir)]
-newroads_test_labels_tiles = [os.path.join(newroads_test_labels_tiles_dir, arq) for arq in os.listdir(newroads_test_labels_tiles_dir)]
+#newroads_test_labels_tiles = [os.path.join(newroads_test_labels_tiles_dir, arq) for arq in os.listdir(newroads_test_labels_tiles_dir)]
 
-
+# Build Dictionaries
 train_imgs_labels_dict = dict(zip(train_imgs_tiles, train_labels_tiles))
 valid_imgs_labels_dict = dict(zip(valid_imgs_tiles, valid_labels_tiles))
 test_imgs_labels_dict = dict(zip(test_imgs_tiles, test_labels_tiles))
 #newroads_valid_labels_dict = dict(zip(valid_imgs_tiles, newroads_valid_labels_tiles)) # Tanto faz colocar valid_imgs_tiles ou test_imgs_tiles,
                                                                                       # porque os tiles das imagens serão descartados, já que eles terão
                                                                                       # sido criados de qualquer maneira
-newroads_test_labels_dict = dict(zip(test_imgs_tiles, newroads_test_labels_tiles))
+#newroads_test_labels_dict = dict(zip(test_imgs_tiles, newroads_test_labels_tiles))
 
 
 
@@ -94,7 +86,7 @@ x_test, y_test = extract_patches_from_tiles(test_imgs_labels_dict, patch_size, p
 
 #_, newroads_y_valid = extract_patches_from_tiles(newroads_valid_labels_dict, patch_size, patch_stride, border_patches=True)
 
-_, newroads_y_test = extract_patches_from_tiles(newroads_test_labels_dict, patch_size, patch_stride, border_patches=True)
+#_, newroads_y_test = extract_patches_from_tiles(newroads_test_labels_dict, patch_size, patch_stride, border_patches=True)
 
 
 # %% Teste com 1 tile apenas
@@ -105,11 +97,36 @@ x_test0, y_test0 = extract_patches_from_tiles(test_imgs_labels_dict0, patch_size
 
 # %% Filtra Patches que contenham mais que 1% de pixels de estrada
 
-x_train, y_train, indices_maior_train = filtra_tiles_estradas(x_train, y_train, 1)
+x_train, y_train, indices_maior_train = filtra_tiles_estradas(x_train, y_train, 5)
 
 x_valid, y_valid, indices_maior_valid = filtra_tiles_estradas(x_valid, y_valid, 1)
 
-#x_test, y_test, indices_maior_test = filtra_tiles_estradas(x_valid, y_valid, 0)
+#x_test, y_test, indices_maior_test = filtra_tiles_estradas(x_test, y_test, 0)
+
+# %% For Masachussets Dataset
+
+y_train[y_train==255] = 1
+y_valid[y_valid==255] = 1
+y_test[y_test==255] = 1
+
+
+# %% For Masachussets Dataset
+
+x_train = x_train/255
+x_valid = x_valid/255
+x_test = x_test/255
+
+
+# %% For Masachussets Dataset
+
+x_train_filter, y_train_filter, indices_maior_train = filtra_tiles_estradas(x_train, y_train, 5)
+
+x_valid_filter, y_valid_filter, indices_maior_valid = filtra_tiles_estradas(x_valid, y_valid, 0.5)
+
+x_test_filter, y_test_filter, indices_maior_test = filtra_tiles_estradas(x_test, y_test, 0)
+
+
+
 
 
 # %% Faz aumento de dados (Função)
