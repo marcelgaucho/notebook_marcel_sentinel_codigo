@@ -24,6 +24,9 @@ from tensorflow.keras.layers import Dropout, Add
 from tensorflow.keras.models import Model, load_model
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras.metrics import Metric
+from tensorflow.keras.losses import CategoricalFocalCrossentropy
+from tensorflow.keras import backend as K
+
 
 
 from sklearn.utils import shuffle
@@ -1388,7 +1391,7 @@ def copia_tiles_filtrados(tiles_folder, new_tiles_folder, indices_filtro, cols):
 def extract_patches_from_tiles(imgs_labels_dict, patch_size, patch_stride, border_patches=False):
     tile_items = list(imgs_labels_dict.items())
     
-    x_patches, y_patches = [], []
+    x_patches, y_patches, len_tiles, shape_tiles = [], [], [], []
     
     for i in range(len(tile_items)):
         tile_item = tile_items[i]
@@ -1405,7 +1408,8 @@ def extract_patches_from_tiles(imgs_labels_dict, patch_size, patch_stride, borde
         
         x_patches.append(x_patches_new)
         y_patches.append(y_patches_new)
-        
+        len_tiles.append(len(x_patches_new))
+        shape_tiles.append(img_tile.shape[:2])
            
 
     # Concatenate patches
@@ -1415,7 +1419,7 @@ def extract_patches_from_tiles(imgs_labels_dict, patch_size, patch_stride, borde
     # Transform y_patches, shape (N, H, W) into shape (N, H, W, C). Necessary for data agumentation.
     y_patches = np.expand_dims(y_patches, 3)
             
-    return x_patches, y_patches
+    return x_patches, y_patches, len_tiles, shape_tiles
 
 
 
@@ -1510,12 +1514,132 @@ class F1Score(Metric):
         self.tp.assign(0) # resets true positives to zero
         self.predicted_positive.assign(0) # resets predicted positives to zero
         self.actual_positive.assign(0) # resets actual positives to zero
+        
+
+
+
+
+def dice_loss(y_true, y_pred, smooth=1e-6):
+    '''
+    Dice Coef = (2*Inter)/(Union+Inter)
+    Dice Loss = 1 - Dice Coef    
+    '''
+    # Cast y_true as float 32
+    y_true = tf.cast(y_true, tf.float32)
+    
+    # Flatten Arrays        
+    y_true_f = K.flatten(y_true[..., 1:])
+    y_pred_f = K.flatten(y_pred[..., 1:])
+    
+    # Intersection and Union
+    intersection = K.sum(y_true_f * y_pred_f)
+    union_plus_inter = K.sum(y_true_f) + K.sum(y_pred_f)
+    
+    # Compute Dice Loss
+    dice_coef = (2. * intersection + smooth) / (union_plus_inter + smooth)
+    #dice_loss = 1 - dice_coef
+    dice_loss = -K.log(dice_coef)
+    
+    return dice_loss
+
+        
+def weighted_focal_loss(alpha, gamma=0):
+    """
+    compute focal loss according to the prob of the sample.
+    loss= -(1-p)^gamma*log(p)
+
+    Variables:
+        gamma: integer
+        alpha: numpy array of shape (C,) where C is the number of classes
+    
+    Usage:
+        gamma = 2 #The larger the gamma value, the less importance of easily classified. Typical values: 0 to 5
+        alpha = np.array([0.5,2,10]) # Class one at 0.5, class 2 twice the normal weights, class 3 10x.
+        loss = weighted_focal_loss(gamma, alpha)
+        model.compile(loss=focal_loss,optimizer='adam')
+    """
+    
+    alpha = K.variable(alpha)
+        
+    def focal_loss(y_true, y_pred):
+        print('Tipo y_true =', y_true.dtype)
+        print('Tipo y_pred =', y_pred.dtype)
+        print('Tipo alpha =', alpha.dtype)
+        # Cast y_true as float 32
+        y_true = tf.cast(y_true, tf.float32)
+        
+        # scale predictions so that the class probas of each sample sum to 1
+        y_pred /= K.sum(y_pred, axis=-1, keepdims=True)
+        # clip to prevent NaN's and Inf's
+        y_pred = K.clip(y_pred, K.epsilon(), 1 - K.epsilon())
+        y_pred_inv = 1.0 - y_pred
+        y_pred_inv = K.pow(y_pred_inv, gamma)
+        # calc
+        focal_loss = y_true * K.log(y_pred) * y_pred_inv * alpha
+        focal_loss = K.mean(-K.sum(focal_loss, -1))
+        return focal_loss
+    
+    return focal_loss
+
+
+def weighted_categorical_crossentropy(weights):
+    """
+    A weighted version of keras.objectives.categorical_crossentropy
+
+    Variables:
+        weights: numpy array of shape (C,) where C is the number of classes
+
+    Usage:
+        weights = np.array([0.5,2,10]) # Class one at 0.5, class 2 twice the normal weights, class 3 10x.
+        loss = weighted_categorical_crossentropy(weights)
+        model.compile(loss=loss,optimizer='adam')
+    """
+
+    #weights = K.variable(weights)
+    weights = tf.Variable(weights, dtype=tf.float32)
+
+    def loss(y_true, y_pred):
+        # scale predictions so that the class probas of each sample sum to 1
+        #y_pred /= K.sum(y_pred, axis=-1, keepdims=True)
+        y_pred /= tf.reduce_sum(y_pred, axis=-1, keepdims=True)
+        # clip to prevent NaN's and Inf's
+        #y_pred = K.clip(y_pred, K.epsilon(), 1 - K.epsilon())
+        y_pred = tf.clip_by_value(y_pred, K.epsilon(), 1 - K.epsilon())
+        # calc
+        #loss = y_true * K.log(y_pred) * weights
+        loss = y_true * tf.math.log(y_pred) * weights
+        #loss = K.mean(-K.sum(loss, -1))
+        loss = tf.reduce_mean(-tf.reduce_sum(loss, axis=-1))
+        
+        return loss
+
+    return loss
+
+
+def jaccard_distance_loss(y_true, y_pred, smooth=100):
+    """
+    Jaccard = (|X & Y|)/ (|X|+ |Y| - |X & Y|)
+            = sum(|A*B|)/(sum(|A|)+sum(|B|)-sum(|A*B|))
+    
+    The jaccard distance loss is usefull for unbalanced datasets. This has been
+    shifted so it converges on 0 and is smoothed to avoid exploding or disapearing
+    gradient.
+    
+    Ref: https://en.wikipedia.org/wiki/Jaccard_index
+    
+    @url: https://gist.github.com/wassname/f1452b748efcbeb4cb9b1d059dce6f96
+    @author: wassname
+    """
+    intersection = K.sum(K.abs(y_true * y_pred), axis=-1)
+    sum_ = K.sum(K.abs(y_true) + K.abs(y_pred), axis=-1)
+    jac = (intersection + smooth) / (sum_ - intersection + smooth)
+    return (1 - jac) * smooth
 
 
 # Função para treinar o modelo conforme os dados (arrays numpy) em uma pasta de entrada, salvando o modelo e o 
 # histórico na pasta de saída
-def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet chamorro', epochs=150, early_stopping=True, 
-                  early_loss=False, loss='cross', gamma=2, metric=F1Score(), best_model_filename = 'best_model',
+def treina_modelo(input_dir: str, y_dir: str, output_dir: str, model_type: str ='resunet chamorro', epochs=150, early_stopping=True, 
+                  early_loss=False, loss='cross', weights=[0.25, 0.75], gamma=2, metric=F1Score(), best_model_filename = 'best_model',
                   train_with_dataset=False, lr_decay=False):
     '''
     
@@ -1555,8 +1679,8 @@ def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet cha
         
     x_train = np.load(input_dir + 'x_train.npy')
     x_valid = np.load(input_dir + 'x_valid.npy')
-    y_train = np.load(input_dir + 'y_train.npy')
-    y_valid = np.load(input_dir + 'y_valid.npy')
+    y_train = np.load(y_dir + 'y_train.npy')
+    y_valid = np.load(y_dir + 'y_valid.npy')
     
     # Faz codificação One-Hot dos Ys
     y_train = to_categorical(y_train, num_classes=2, dtype='uint8')
@@ -1588,7 +1712,7 @@ def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet cha
 
     # Parâmetros do Early Stopping
     early_stopping = early_stopping
-    early_stopping_epochs = 50
+    early_stopping_epochs = 20
     #early_stopping_epochs = 2
     #early_stopping_delta = 0.001 # aumento delta (percentual de diminuição da perda) equivalente a 0.1%
     early_stopping_delta = 0.001 # aumento delta (percentual de diminuição da perda) equivalente a 0.1%
@@ -1599,16 +1723,27 @@ def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet cha
     
     # Otimizador
     adam = Adam(learning_rate = learning_rate , beta_1=0.9)
+    #adam = SGD(learning_rate = learning_rate , momentum=0.9)
     
     # Compila o modelo
     if loss == 'focal':
-        model.compile(loss = 'sparse_categorical_crossentropy', optimizer=adam , metrics=[metric])
+        focal_loss = CategoricalFocalCrossentropy(alpha=weights, gamma=gamma)
+        #focal_loss = weighted_focal_loss(alpha=weights, gamma=gamma)
+        model.compile(loss = focal_loss, optimizer=adam , metrics=[metric, tf.keras.metrics.Precision(class_id=1), tf.keras.metrics.Recall(class_id=1)])
     elif loss == 'cross':
         #model.compile(loss = 'sparse_categorical_crossentropy', optimizer=adam, metrics=[metric])
-        model.compile(loss = 'categorical_crossentropy', optimizer=adam, metrics=[metric])
+        model.compile(loss = 'categorical_crossentropy', optimizer=adam, metrics=[metric, tf.keras.metrics.Precision(class_id=1), tf.keras.metrics.Recall(class_id=1)])
     elif loss == 'mse':
         adam = SGD(learning_rate = learning_rate)
-        model.compile(loss = 'mse', optimizer=adam, metrics=[metric])
+        model.compile(loss = 'mse', optimizer=adam, metrics=[metric, tf.keras.metrics.Precision(class_id=1), tf.keras.metrics.Recall(class_id=1)])
+    elif loss == 'dice':
+        model.compile(loss = dice_loss, optimizer=adam, metrics=[metric, tf.keras.metrics.Precision(class_id=1), tf.keras.metrics.Recall(class_id=1)])
+    elif loss == 'jaccard':
+        model.compile(loss = jaccard_distance_loss, optimizer=adam, metrics=[metric, tf.keras.metrics.Precision(class_id=1), tf.keras.metrics.Recall(class_id=1)])
+    elif loss == 'wcross':
+        model.compile(loss = weighted_categorical_crossentropy(weights), optimizer=adam, metrics=[metric, tf.keras.metrics.Precision(class_id=1), tf.keras.metrics.Recall(class_id=1)])
+        
+        
         
         
 
@@ -1634,9 +1769,9 @@ def treina_modelo(input_dir: str, output_dir: str, model_type: str ='resunet cha
     # Transforma dados para tensores dentro da CPU
     with tf.device('/CPU:0'):
         x_train = tf.convert_to_tensor(x_train)
-        y_train = tf.convert_to_tensor(y_train)
+        y_train = tf.convert_to_tensor(y_train, dtype=tf.float32)
         x_valid = tf.convert_to_tensor(x_valid)
-        y_valid = tf.convert_to_tensor(y_valid)
+        y_valid = tf.convert_to_tensor(y_valid, dtype=tf.float32)
     
     # Treina o modelo
     # Testa se a métrica é string
@@ -1818,7 +1953,7 @@ def gera_graficos(metrics_dirs_list, lista_nomes_exp, save_path=r''):
 
 
 # Avalia um modelo segundo conjuntos de treino, validação, teste e mosaicos de teste
-def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score', 
+def avalia_modelo(input_dir: str, y_dir: str, output_dir: str, metric_name = 'F1-Score', 
                   etapa=3, dist_buffers = [3], std_blur = 0.4, subpatch_size=32,
                   k=3, avalia_train=False):
     metric_name = metric_name
@@ -1842,7 +1977,7 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
     # Avalia treino    
     if avalia_train:
         x_train = np.load(input_dir + 'x_train.npy')
-        y_train = np.load(input_dir + 'y_train.npy')
+        y_train = np.load(y_dir + 'y_train.npy')
 
         if not os.path.exists(os.path.join(output_dir, 'pred_train.npy')) or \
            not os.path.exists(os.path.join(output_dir, 'prob_train.npy')): 
@@ -1873,9 +2008,9 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
     
         for dist in dist_buffers:
             # Buffers para Precisão Relaxada
-            if not os.path.exists(os.path.join(input_dir, f'buffer_y_train_{dist}px.npy')): 
+            if not os.path.exists(os.path.join(y_dir, f'buffer_y_train_{dist}px.npy')): 
                 buffers_y_train[dist] = buffer_patches(y_train, dist_cells=dist)
-                np.save(input_dir + f'buffer_y_train_{dist}px.npy', buffers_y_train[dist])
+                np.save(y_dir + f'buffer_y_train_{dist}px.npy', buffers_y_train[dist])
                 
             # Buffers para Sensibilidade Relaxada
             if not os.path.exists(os.path.join(output_dir, f'buffer_pred_train_{dist}px.npy')):
@@ -1885,7 +2020,7 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
 
         # Lê buffers de arrays de predição do Treinamento
         for dist in dist_buffers:
-            buffers_y_train[dist] = np.load(input_dir + f'buffer_y_train_{dist}px.npy')            
+            buffers_y_train[dist] = np.load(y_dir + f'buffer_y_train_{dist}px.npy')            
             buffers_pred_train[dist] = np.load(output_dir + f'buffer_pred_train_{dist}px.npy')
   
         
@@ -1915,7 +2050,7 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
     
     # Avalia Valid
     x_valid = np.load(input_dir + 'x_valid.npy')
-    y_valid = np.load(input_dir + 'y_valid.npy')
+    y_valid = np.load(y_dir + 'y_valid.npy')
     
     if not os.path.exists(os.path.join(output_dir, 'pred_valid.npy')) or \
        not os.path.exists(os.path.join(output_dir, 'prob_valid.npy')):
@@ -1940,9 +2075,9 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
     
     for dist in dist_buffers:
         # Buffers para Precisão Relaxada
-        if not os.path.exists(os.path.join(input_dir, f'buffer_y_valid_{dist}px.npy')): 
+        if not os.path.exists(os.path.join(y_dir, f'buffer_y_valid_{dist}px.npy')): 
             buffers_y_valid[dist] = buffer_patches(y_valid, dist_cells=dist)
-            np.save(input_dir + f'buffer_y_valid_{dist}px.npy', buffers_y_valid[dist])
+            np.save(y_dir + f'buffer_y_valid_{dist}px.npy', buffers_y_valid[dist])
         
         # Buffers para Sensibilidade Relaxada
         if not os.path.exists(os.path.join(output_dir, f'buffer_pred_valid_{dist}px.npy')): 
@@ -1951,7 +2086,7 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
             
             
     for dist in dist_buffers:
-        buffers_y_valid[dist] = np.load(input_dir + f'buffer_y_valid_{dist}px.npy')
+        buffers_y_valid[dist] = np.load(y_dir + f'buffer_y_valid_{dist}px.npy')
         buffers_pred_valid[dist] = np.load(output_dir + f'buffer_pred_valid_{dist}px.npy')
         
         
@@ -1979,7 +2114,7 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
 
     # Avalia teste
     x_test = np.load(input_dir + 'x_test.npy')
-    y_test = np.load(input_dir + 'y_test.npy')
+    y_test = np.load(y_dir + 'y_test.npy')
     
     if not os.path.exists(os.path.join(output_dir, 'pred_test.npy')) or \
        not os.path.exists(os.path.join(output_dir, 'prob_test.npy')):
@@ -2002,9 +2137,9 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
     
     for dist in dist_buffers:
         # Buffer para Precisão Relaxada
-        if not os.path.exists(os.path.join(input_dir, f'buffer_y_test_{dist}px.npy')):
+        if not os.path.exists(os.path.join(y_dir, f'buffer_y_test_{dist}px.npy')):
             buffers_y_test[dist] = buffer_patches(y_test, dist_cells=dist)
-            np.save(input_dir + f'buffer_y_test_{dist}px.npy', buffers_y_test[dist])
+            np.save(y_dir + f'buffer_y_test_{dist}px.npy', buffers_y_test[dist])
             
         # Buffer para Sensibilidade Relaxada
         if not os.path.exists(os.path.join(output_dir, f'buffer_pred_test_{dist}px.npy')):
@@ -2013,7 +2148,7 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
             
             
     for dist in dist_buffers:
-        buffers_y_test[dist] = np.load(input_dir + f'buffer_y_test_{dist}px.npy')
+        buffers_y_test[dist] = np.load(y_dir + f'buffer_y_test_{dist}px.npy')
         buffers_pred_test[dist] = np.load(output_dir + f'buffer_pred_test_{dist}px.npy')
         
         
@@ -2037,41 +2172,61 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
         
     gc.collect()
     
-    # Faz e avalia Mosaicos de Teste
-    # Stride e Dimensões do Tile
-    patch_test_stride = 210 # tem que estabelecer de forma manual de acordo com o stride usado para extrair os patches
-    labels_test_shape = (1500, 1500) # também tem que estabelecer de forma manual de acordo com as dimensões da imagem de referência
-    n_test_tiles = 49 # Número de tiles de teste  
+    # Gera Mosaicos de Teste
+    # Avalia Mosaicos de Teste
+    if not os.path.exists(os.path.join(input_dir, 'y_mosaics.npy')) or \
+       not not os.path.exists(os.path.join(output_dir, 'pred_mosaics.npy')):
+
+        # Stride e Dimensões do Tile
+        with open(y_dir + 'info_tiles_test.pickle', "rb") as fp:   
+            info_tiles_test = pickle.load(fp)
+            len_tiles_test = info_tiles_test['len_tiles_test']
+            shape_tiles_test = info_tiles_test['shape_tiles_test']
+            patch_test_stride = info_tiles_test['patch_stride_test']
     
-    # Pasta com os tiles de teste para pegar informações de georreferência
-    test_labels_tiles_dir = r'dataset_massachusetts_mnih/test/maps'
-    labels_paths = [os.path.join(test_labels_tiles_dir, arq) for arq in os.listdir(test_labels_tiles_dir)]
-    labels_paths.sort()
+        # patch_test_stride = 210 # tem que estabelecer de forma manual de acordo com o stride usado para extrair os patches
+
+        # labels_test_shape = (1500, 1500) # também tem que estabelecer de forma manual de acordo com as dimensões da imagem de referência
+        labels_test_shape = shape_tiles_test
+
+        # n_test_tiles = 49 # Número de tiles de teste
     
-    # Gera mosaicos e lista com os mosaicos previstos
-    pred_mosaics = gera_mosaicos(output_dir, pred_test, labels_paths, 
-                                 patch_test_stride=patch_test_stride,
-                                 labels_test_shape=labels_test_shape,
-                                 n_test_tiles=n_test_tiles, is_float=False)
+        # Pasta com os tiles de teste para pegar informações de georreferência
+        #test_labels_tiles_dir = r'dataset_massachusetts_mnih/test/maps'
+        test_labels_tiles_dir = r'tiles/masks/2018/test'
+        labels_paths = [os.path.join(test_labels_tiles_dir, arq) for arq in os.listdir(test_labels_tiles_dir)]
+        labels_paths.sort()
     
-    # Lista e Array dos Mosaicos de Referência
-    y_mosaics = [gdal.Open(y_mosaic_path).ReadAsArray() for y_mosaic_path in labels_paths]
-    y_mosaics = np.array(y_mosaics)[..., np.newaxis]
+        # Gera mosaicos e lista com os mosaicos previstos
+        pred_mosaics = gera_mosaicos(output_dir, pred_test, labels_paths, 
+                                     patch_test_stride=patch_test_stride,
+                                     labels_test_shape=labels_test_shape,
+                                     len_tiles_test=len_tiles_test, is_float=False)
     
-    # Array dos Mosaicos de Predição 
-    pred_mosaics = np.array(pred_mosaics)[..., np.newaxis]
-    pred_mosaics = pred_mosaics.astype(np.uint8)
+        # Lista e Array dos Mosaicos de Referência
+        y_mosaics = [gdal.Open(y_mosaic_path).ReadAsArray() for y_mosaic_path in labels_paths]
+        #y_mosaics = np.array(y_mosaics)[..., np.newaxis]
+        y_mosaics = stack_uneven(y_mosaics)[..., np.newaxis]
+        
+        # Transforma valor NODATA de y_mosaics em 0
+        y_mosaics[y_mosaics==255] = 0
+        
+        # Array dos Mosaicos de Predição 
+        #pred_mosaics = np.array(pred_mosaics)[..., np.newaxis]
+        pred_mosaics = stack_uneven(pred_mosaics)[..., np.newaxis]
+        pred_mosaics = pred_mosaics.astype(np.uint8)
+        
+        # Salva Array dos Mosaicos de Predição
+        salva_arrays(y_dir, y_mosaics=y_mosaics)
+        salva_arrays(output_dir, pred_mosaics=pred_mosaics)
+
 
     # Libera memória se for possível
     pred_test = None
     gc.collect()
     
-    # Salva Array dos Mosaicos de Predição
-    if not os.path.exists(os.path.join(input_dir, 'y_mosaics.npy')): salva_arrays(input_dir, y_mosaics=y_mosaics)
-    if not os.path.exists(os.path.join(output_dir, 'pred_mosaics.npy')): salva_arrays(output_dir, pred_mosaics=pred_mosaics)
-    
     # Lê Mosaicos 
-    y_mosaics = np.load(input_dir + 'y_mosaics.npy')
+    y_mosaics = np.load(y_dir + 'y_mosaics.npy')
     pred_mosaics = np.load(output_dir + 'pred_mosaics.npy')
         
     # Buffer dos Mosaicos de Referência e Predição
@@ -2080,9 +2235,9 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
     
     for dist in dist_buffers:
         # Buffer dos Mosaicos de Referência
-        if not os.path.exists(os.path.join(input_dir, f'buffers_y_mosaics_{dist}px.npy')):
+        if not os.path.exists(os.path.join(y_dir, f'buffers_y_mosaics_{dist}px.npy')):
             buffers_y_mosaics[dist] = buffer_patches(y_mosaics, dist_cells=dist)
-            np.save(input_dir + f'buffer_y_mosaics_{dist}px.npy', buffers_y_mosaics[dist])
+            np.save(y_dir + f'buffer_y_mosaics_{dist}px.npy', buffers_y_mosaics[dist])
             
         # Buffer dos Mosaicos de Predição   
         if not os.path.exists(os.path.join(output_dir, f'buffer_pred_mosaics_{dist}px.npy')):
@@ -2092,7 +2247,7 @@ def avalia_modelo(input_dir: str, output_dir: str, metric_name = 'F1-Score',
     
     # Lê buffers de Mosaicos
     for dist in dist_buffers:
-        buffers_y_mosaics[dist] = np.load(input_dir + f'buffer_y_mosaics_{dist}px.npy')
+        buffers_y_mosaics[dist] = np.load(y_dir + f'buffer_y_mosaics_{dist}px.npy')
         buffers_pred_mosaics[dist] = np.load(output_dir + f'buffer_pred_mosaics_{dist}px.npy')  
         
         
@@ -2566,8 +2721,8 @@ def calcula_pred_from_prob_ensemble_mean(prob_array):
 # que deram origem aos patches e que serão usados para informações de georreferência
 # patch_test_stride é o stride com o qual foram extraídos os patches, necessário para a reconstrução dos tiles
 # labels_test_shape é a dimensão de cada tile, também necessário para suas reconstruções
-# n_test_tiles é a quantidade de tiles a serem reconstruídos
-def gera_mosaicos(output_dir, pred_array, labels_paths, prefix='outmosaic', patch_test_stride=96, labels_test_shape=(1408, 1280), n_test_tiles=10, is_float=False):
+# len_tiles_test é a quantidade de patches por tile
+def gera_mosaicos(output_dir, pred_array, labels_paths, prefix='outmosaic', patch_test_stride=96, labels_test_shape=(1408, 1280), len_tiles_test=[], is_float=False):
     # Stride e Dimensões do Tile
     patch_test_stride = patch_test_stride # tem que estabelecer de forma manual de acordo com o stride usado para extrair os patches
     labels_test_shape = labels_test_shape # também tem que estabelecer de forma manual de acordo com as dimensões da imagem de referência
@@ -2575,8 +2730,9 @@ def gera_mosaicos(output_dir, pred_array, labels_paths, prefix='outmosaic', patc
     # Lista com os mosaicos previstos
     pred_test_mosaic_list = []
     
-    n_test_tiles = n_test_tiles
-    n_patches_tile = int(pred_array.shape[0]/n_test_tiles) # Quantidade de patches por tile. Supõe tiles com igual número de patches
+    # n_test_tiles = n_test_tiles
+    n_test_tiles = len(len_tiles_test)
+    # n_patches_tile = int(pred_array.shape[0]/n_test_tiles) # Quantidade de patches por tile. Supõe tiles com igual número de patches
     n = len(pred_array) # Quantidade de patches totais, contando todos os tiles, é igual ao comprimento 
     
     i = 0 # Índice onde o tile começa
@@ -2585,15 +2741,15 @@ def gera_mosaicos(output_dir, pred_array, labels_paths, prefix='outmosaic', patc
     while i < n:
         print('Making Mosaic {}/{}'.format(i_mosaic+1, n_test_tiles ))
         
-        pred_test_mosaic = unpatch_reference(pred_array[i:i+n_patches_tile, ..., 0], patch_test_stride, labels_test_shape, border_patches=True)
+        pred_test_mosaic = unpatch_reference(pred_array[i:i+len_tiles_test[i_mosaic], ..., 0], patch_test_stride, labels_test_shape[i_mosaic], border_patches=True)
         
         pred_test_mosaic_list.append(pred_test_mosaic) 
         
         # Incremento
-        i = i+n_patches_tile
+        i = i+len_tiles_test[i_mosaic]
         i_mosaic += 1  
         
-        
+    """    
     # Salva mosaicos
     labels_paths = labels_paths
     output_dir = output_dir
@@ -2616,6 +2772,7 @@ def gera_mosaicos(output_dir, pred_array, labels_paths, prefix='outmosaic', patc
             save_raster_reference(labels_path, out_mosaic_path, pred_test_mosaic, is_float=True)
         else:
             save_raster_reference(labels_path, out_mosaic_path, pred_test_mosaic, is_float=False)
+    """
             
             
     # Retorna lista de mosaicos
@@ -2842,11 +2999,12 @@ def blur_x_patches(x_train, y_train, dim, k, blur, model):
         contagem_estrada = np.array([np.count_nonzero(subpatches_y_train[i_patch, i_subpatch] == 1) 
                                      for i_subpatch in range(subpatches_y_train.shape[1])])
         
-        # Array com índices dos subpatches que tem número de pixels de estrada maior que pixels_corte
-        indices_maior = np.where(contagem_estrada > pixels_corte)[0]
+        # Array com índices dos subpatches em ordem decrescente de número de pixels de estrada
+        indices_sorted_desc = np.argsort(contagem_estrada)[::-1]
         
-        # Coloca array dos índices maiores em ordem decrescente
-        indices_maior = np.sort(indices_maior)[::-1]
+        # Deixa somente os indices cujos subpatches tem número de pixels maior que o limiar pixels_corte
+        indices_maior = np.array([indice for indice in indices_sorted_desc 
+                                  if contagem_estrada[indice] > pixels_corte])
         
         # Pega os k subpatches que tem mais pixels de estrada e 
         # que tem quantidade de pixels de estrada maior que 0
@@ -2892,6 +3050,95 @@ def blur_x_patches(x_train, y_train, dim, k, blur, model):
     # Retorna patches com blur e predições
     return x_train_blur, pred_train_blur
     
+
+
+def occlude_y_patches(y_train, dim, k):
+    # Tamanho do patch e número de canais dos patches e número de patches e Quantidade de pixels em um subpatch
+    patch_size = y_train.shape[1] # Patch Quadrado
+    n_channels = 1 # Só um canal, pois é máscara
+    n_patches = y_train.shape[0]
+    pixels_patch = patch_size*patch_size
+    pixels_subpatch = dim*dim
+    
+    if k > pixels_patch//pixels_subpatch:
+        raise Exception('k é maior que o número total de subpatches com o tamanho subpatch_size. '
+                        'Diminua o tamanho do k ou diminua o tamanho do subpatch')
+        
+    # Variáveis para extração dos subpatches (tiles) a partir dos patches
+    sizes = [1, dim, dim, 1]
+    strides = [1, dim, dim, 1]
+    rates = [1, 1, 1, 1]
+    padding = 'VALID'
+    
+    
+    # Extrai subpatches e faz o reshape para estar 
+    # na forma (patch, número total de subpatches, altura do subpatch, 
+    # largura do subpatch, número de canais do subpatch)
+    # Na forma como é extraído, o subpatch fica achatado na forma
+    # (patch, número vertical de subpatches, número horizontal de subpatches, número de pixels do subpatch achatado)
+    subpatches_y_train = tf.image.extract_patches(y_train, sizes=sizes, strides=strides, rates=rates, padding=padding).numpy()
+    n_vertical_subpatches = subpatches_y_train.shape[1]
+    n_horizontal_subpatches = subpatches_y_train.shape[2]
+    subpatches_y_train = subpatches_y_train.reshape((n_patches, n_vertical_subpatches*n_horizontal_subpatches, 
+                                                     dim, dim, n_channels)) # Só um canal para referência
+    
+    
+    # Serão selecionados, preferencialmente, subpatches com número de pixels de estrada maior que pixels_corte
+    pixels_corte = 0
+    
+    # Aplica blur nos respectivos subpatches    
+    for i_patch in range(len(subpatches_y_train)):
+        # Conta número de pixels de estrada em cada subpatch do presente patch
+        contagem_estrada = np.array([np.count_nonzero(subpatches_y_train[i_patch, i_subpatch] == 1) 
+                                     for i_subpatch in range(subpatches_y_train.shape[1])])
+        
+        # Array com índices dos subpatches em ordem decrescente de número de pixels de estrada
+        indices_sorted_desc = np.argsort(contagem_estrada)[::-1]
+        
+        # Deixa somente os indices cujos subpatches tem número de pixels maior que o limiar pixels_corte
+        indices_maior = np.array([indice for indice in indices_sorted_desc 
+                                  if contagem_estrada[indice] > pixels_corte])
+        # indices_maior = indices_sorted_desc[contagem_estrada > pixels_corte]
+        
+        # Pega os k subpatches que tem mais pixels de estrada e 
+        # que tem quantidade de pixels de estrada maior que 0
+        indices_selected_subpatches = indices_maior[:k]
+        
+        # Converte em lista e coloca em ordem crescente
+        indices_selected_subpatches = list(indices_selected_subpatches)
+        indices_selected_subpatches.sort()
+            
+        # Cria array com subpatches escolhidos
+        selected_subpatches_y_train_i_patch = subpatches_y_train[i_patch][indices_selected_subpatches]
+        
+        # Aplica filtro aos subpatches 
+        selected_subpatches_y_train_i_patch_occluded = np.zeros(selected_subpatches_y_train_i_patch.shape)
+        
+        # Substitui subpatches pelos respectivos subpatches com blur no array original de subpatches
+        subpatches_y_train[i_patch][indices_selected_subpatches] = selected_subpatches_y_train_i_patch_occluded
+        
+    
+    # Agora faz reconstituição dos patches originais, com o devido blur nos subpatches
+    # Coloca no formato aceito da função de reconstituição
+    y_train_occluded = np.zeros(y_train.shape, dtype=np.uint8)
+    
+    for i_patch in range(len(subpatches_y_train)):
+        # Pega subpatches do patch
+        sub = subpatches_y_train[i_patch]
+    
+        # Divide em linhas    
+        rows = np.split(sub, patch_size//dim, axis=0)
+        
+        # Concatena linhas
+        rows = [tf.concat(tf.unstack(x), axis=1).numpy() for x in rows]
+        
+        # Reconstroi
+        reconstructed = (tf.concat(rows, axis=0)).numpy()
+        
+        # Atribui
+        y_train_occluded[i_patch] = reconstructed
+        
+    return y_train_occluded
     
     
 
@@ -3064,36 +3311,41 @@ def treina_com_subpatches(filenames_train_list, filenames_valid_list, filenames_
                       loss='cross', lr_decay=True)
         
         
-# Etapa 1 se refere ao processamento no qual a entrada do pós-processamento é a predição do modelo
-# Etapa 2 ao processamento no qual a entrada do pós-processamento é a imagem original mais a predição do modelo
+# Etapa 1 se refere ao processamento no qual a entrada do treinamento do pós-processamento é a predição do modelo
+# Etapa 2 ao processamento no qual a entrada do treinamento do pós-processamento é a imagem original mais a predição do modelo
+# Etapa 3 ao processamento no qual a entrada do treinamento do pós-processamento é o rótulo degradado
 # Etapa 5 se refere ao pós-processamento
-def gera_dados_segunda_rede(input_dir, output_dir, etapa=2):
+def gera_dados_segunda_rede(input_dir, y_dir, output_dir, etapa=2):
     x_train = np.load(input_dir + 'x_train.npy')
     x_valid = np.load(input_dir + 'x_valid.npy')
     
-    # Copia y_train e y_valid para diretório de saída, pois eles serão usados depois como entrada (rótulos)
+    y_train = np.load(y_dir + 'y_train.npy')
+    y_valid = np.load(y_dir + 'y_valid.npy')
+    
+    # Copia y_train e y_valid para diretório de saída, pois eles são mantidos como rótulos da Segunda Rede
     # para o pós-processamento
-    if etapa==1 or etapa==2 or etapa==3 or etapa==4:
-        shutil.copy(input_dir + 'y_train.npy', output_dir + 'y_train.npy')
-        shutil.copy(input_dir + 'y_valid.npy', output_dir + 'y_valid.npy')
+    # if etapa==1 or etapa==2 or etapa==3 or etapa==4:
+    #     shutil.copy(input_dir + 'y_train.npy', output_dir + 'y_train.npy')
+    #     shutil.copy(input_dir + 'y_valid.npy', output_dir + 'y_valid.npy')
         
     # Predições
-    if not os.path.exists(os.path.join(output_dir, 'pred_train.npy')):
-        # Nome do modelo salvo
-        best_model_filename = 'best_model'
+    # if not os.path.exists(os.path.join(output_dir, 'pred_train.npy')):
+    #     # Nome do modelo salvo
+    #     best_model_filename = 'best_model'
         
-        # Load model
-        model = load_model(output_dir + best_model_filename + '.h5', compile=False)        
+    #     # Load model
+    #     model = load_model(output_dir + best_model_filename + '.h5', compile=False)        
         
-        # Faz predição
-        pred_train, _ = Test_Step(model, x_train, 2)
+    #     # Faz predição
+    #     pred_train, _ = Test_Step(model, x_train, 2)
         
-        # Converte para tipo que ocupa menos espaço e salva
-        pred_train = pred_train.astype(np.uint8)
-        salva_arrays(output_dir, pred_train=pred_train)
+    #     # Converte para tipo que ocupa menos espaço e salva
+    #     pred_train = pred_train.astype(np.uint8)
+    #     salva_arrays(output_dir, pred_train=pred_train)
     
-    pred_train = np.load(output_dir + 'pred_train.npy')
-    pred_valid = np.load(output_dir + 'pred_valid.npy')
+    if etapa != 3:
+        pred_train = np.load(output_dir + 'pred_train.npy')
+        pred_valid = np.load(output_dir + 'pred_valid.npy')
         
     # Forma e Copia para Nova Pasta o Novo x_train e x_valid
     if etapa == 1:
@@ -3109,17 +3361,31 @@ def gera_dados_segunda_rede(input_dir, output_dir, etapa=2):
             x_valid_new = np.concatenate((x_valid, pred_valid), axis=-1)
             salva_arrays(output_dir, x_train=x_train_new, x_valid=x_valid_new)
             
+    if etapa == 3:
+        dim = 14
+        k = 10
+        if not os.path.exists(os.path.join(output_dir, 'x_train.npy')) or \
+            not os.path.exists(os.path.join(output_dir, 'x_valid.npy')):
+            x_train_new = occlude_y_patches(y_train, dim, k)
+            x_valid_new = occlude_y_patches(y_valid, dim, k)
+            salva_arrays(output_dir, x_train=x_train_new, x_valid=x_valid_new)
+            
     # Libera memória
-    del x_train, x_valid, pred_train, pred_valid
+    if all(pred in locals() for pred in ('pred_train', 'pred_valid')):
+        del x_train, x_valid, y_train, y_valid, pred_train, pred_valid
+    else:
+        del x_train, x_valid, y_train, y_valid
+        
     gc.collect()
             
             
     # Lê arrays referentes aos patches de teste
     x_test = np.load(input_dir + 'x_test.npy')
     
+    
     # Copia y_test para diretório de saída, pois ele será usado como entrada (rótulo) para o pós-processamento
-    if etapa==1 or etapa==2 or etapa==3 or etapa==4:
-        shutil.copy(input_dir + 'y_test.npy', output_dir + 'y_test.npy')
+    # if etapa==1 or etapa==2 or etapa==3 or etapa==4:
+    #     shutil.copy(input_dir + 'y_test.npy', output_dir + 'y_test.npy')
         
     # Predições
     pred_test = np.load(output_dir + 'pred_test.npy')
@@ -3134,6 +3400,36 @@ def gera_dados_segunda_rede(input_dir, output_dir, etapa=2):
             x_test_new = np.concatenate((x_test, pred_test), axis=-1)
             salva_arrays(output_dir, x_test=x_test_new)
             
+    if etapa == 3: # No caso o X teste será igual ao da etapa 1
+        if not os.path.exists(os.path.join(output_dir, 'x_test.npy')):
+            shutil.copy(output_dir + 'pred_test.npy', output_dir + 'x_test.npy')
+            
     # Libera memória
     del x_test, pred_test
     gc.collect()
+    
+    
+    
+def stack_uneven(arrays, fill_value=0.):
+    '''
+    Fits arrays into a single numpy array, even if they are
+    different sizes. `fill_value` is the default value.
+
+    Args:
+            arrays: list of np arrays of various sizes
+                (must be same rank, but not necessarily same size)
+            fill_value (float, optional):
+
+    Returns:
+            np.ndarray
+    '''
+    sizes = [a.shape for a in arrays]
+    max_sizes = np.max(list(zip(*sizes)), -1)
+    # The resultant array has stacked on the first dimension
+    result = np.full((len(arrays),) + tuple(max_sizes), fill_value)
+    for i, a in enumerate(arrays):
+      # The shape of this array `a`, turned into slices
+      slices = tuple(slice(0,s) for s in sizes[i])
+      # Overwrite a block slice of `result` with this array `a`
+      result[i][slices] = a
+    return result

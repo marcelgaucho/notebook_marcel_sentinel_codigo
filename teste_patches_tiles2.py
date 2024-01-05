@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 from osgeo import gdal
 import os
 import math
+import pickle
 from functions_bib import load_tiff_image, load_tiff_image_reference, normalization
 from functions_bib import extract_patches, salva_arrays, train_unet, build_model
 from functions_bib import show_graph_loss_accuracy, compute_relaxed_metrics, unpatch_reference
@@ -19,21 +20,22 @@ from functions_bib import extract_tiles, filtra_tiles_estradas, copia_tiles_filt
 
 
 # Images Directories
-train_test_dir = 'entrada1/'
-
+train_test_dir = 'entrada/'
+y_dir = 'y_directory/'
 
 # %% Extrai patches (Info)
 
 # Tamanho do patch. Patch é quadrado (altura=largura)
-patch_size = 224
+patch_size = 128
 
 # Stride do Patch. Com um stride menor que a largura do patch há sobreposição entre os patches
 # 25% de sobreposição entre patches
-patch_overlap = 0.0625 # In Mnih the overlap is 14 pixels. 224*0.0625 = 14
+patch_overlap = 0.25
+#patch_overlap = 0.0625 # In Mnih the overlap is 14 pixels. 224*0.0625 = 14
 patch_stride = patch_size - int(patch_size * patch_overlap)
 
 # Número de canais da imagem/patch
-image_channels = 3
+image_channels = 4
 
 # Dimensões do patch
 input_shape = (patch_size, patch_size, image_channels)
@@ -43,12 +45,20 @@ input_shape = (patch_size, patch_size, image_channels)
 
 # %% Varre diretório de treino e de validação para abrir os tiles dos quais os patches serão extraídos
 
-train_imgs_tiles_dir = r'dataset_massachusetts_mnih/train/input'
-valid_imgs_tiles_dir = r'dataset_massachusetts_mnih/validation/input'
-train_labels_tiles_dir = r'dataset_massachusetts_mnih/train/maps'
-valid_labels_tiles_dir = r'dataset_massachusetts_mnih/validation/maps'
-test_imgs_tiles_dir = r'dataset_massachusetts_mnih/test/input'
-test_labels_tiles_dir = r'dataset_massachusetts_mnih/test/maps'
+# train_imgs_tiles_dir = r'dataset_massachusetts_mnih/train/input'
+# valid_imgs_tiles_dir = r'dataset_massachusetts_mnih/validation/input'
+# train_labels_tiles_dir = r'dataset_massachusetts_mnih/train/maps'
+# valid_labels_tiles_dir = r'dataset_massachusetts_mnih/validation/maps'
+# test_imgs_tiles_dir = r'dataset_massachusetts_mnih/test/input'
+# test_labels_tiles_dir = r'dataset_massachusetts_mnih/test/maps'
+train_imgs_tiles_dir = r'tiles/imgs/train'
+valid_imgs_tiles_dir = r'tiles/imgs/valid'
+train_labels_tiles_dir = r'tiles/masks/2016/train'
+valid_labels_tiles_dir = r'tiles/masks/2018/valid'
+test_imgs_tiles_dir = r'tiles/imgs/test'
+test_labels_tiles_dir = r'tiles/masks/2018/test'
+
+
 #newroads_valid_labels_tiles_dir = r'new_teste_tiles\masks\valid_new_roads'
 #newroads_test_labels_tiles_dir = r'new_teste_tiles\masks\test_new_roads'
 
@@ -82,7 +92,7 @@ x_train, y_train = extract_patches_from_tiles(train_imgs_labels_dict, patch_size
 
 x_valid, y_valid = extract_patches_from_tiles(valid_imgs_labels_dict, patch_size, patch_stride)
 
-x_test, y_test = extract_patches_from_tiles(test_imgs_labels_dict, patch_size, patch_stride, border_patches=True)
+x_test, y_test, len_tiles_test, shape_tiles_test = extract_patches_from_tiles(test_imgs_labels_dict, patch_size, patch_stride, border_patches=True)
 
 #_, newroads_y_valid = extract_patches_from_tiles(newroads_valid_labels_dict, patch_size, patch_stride, border_patches=True)
 
@@ -97,17 +107,30 @@ x_test0, y_test0 = extract_patches_from_tiles(test_imgs_labels_dict0, patch_size
 
 # %% Filtra Patches que contenham mais que 1% de pixels de estrada
 
-x_train, y_train, indices_maior_train = filtra_tiles_estradas(x_train, y_train, 5)
+x_train, y_train, indices_maior_train = filtra_tiles_estradas(x_train, y_train, 3)
+x_valid, y_valid, indices_maior_valid = filtra_tiles_estradas(x_valid, y_valid, 3)
 
-x_valid, y_valid, indices_maior_valid = filtra_tiles_estradas(x_valid, y_valid, 1)
+
+# x_valid, y_valid, indices_maior_valid = filtra_tiles_estradas(x_valid, y_valid, 5)
+# x_valid, y_valid, indices_maior_valid = filtra_tiles_estradas(x_valid, y_valid, 0.5)
+
 
 #x_test, y_test, indices_maior_test = filtra_tiles_estradas(x_test, y_test, 0)
 
 # %% For Masachussets Dataset
 
-y_train[y_train==255] = 1
-y_valid[y_valid==255] = 1
-y_test[y_test==255] = 1
+x_train[x_train==-9999]=0
+x_valid[x_valid==-9999]=0
+x_test[x_test==-9999]=0 
+
+
+
+# y_train[y_train==255] = 1
+# y_valid[y_valid==255] = 1
+# y_test[y_test==255] = 1
+y_train[y_train==255] = 0
+y_valid[y_valid==255] = 0
+y_test[y_test==255] = 0
 
 
 # %% For Masachussets Dataset
@@ -119,9 +142,13 @@ x_test = x_test/255
 
 # %% For Masachussets Dataset
 
-x_train_filter, y_train_filter, indices_maior_train = filtra_tiles_estradas(x_train, y_train, 5)
+# x_train_filter, y_train_filter, indices_maior_train = filtra_tiles_estradas(x_train, y_train, 5)
 
-x_valid_filter, y_valid_filter, indices_maior_valid = filtra_tiles_estradas(x_valid, y_valid, 0.5)
+# x_valid_filter, y_valid_filter, indices_maior_valid = filtra_tiles_estradas(x_valid, y_valid, 0.5)
+
+x_train_filter, y_train_filter, indices_maior_train = filtra_tiles_estradas(x_train, y_train, 3)
+
+x_valid_filter, y_valid_filter, indices_maior_valid = filtra_tiles_estradas(x_valid, y_valid, 3)
 
 x_test_filter, y_test_filter, indices_maior_test = filtra_tiles_estradas(x_test, y_test, 0)
 
@@ -391,8 +418,21 @@ salva_arrays(train_test_dir, x_train=x_train, y_train=y_train,
 
 x_test = x_test.astype(np.float16)
 y_test = y_test.astype(np.uint8)
-newroads_y_test = newroads_y_test.astype(np.uint8)
+#newroads_y_test = newroads_y_test.astype(np.uint8)
 
-salva_arrays(train_test_dir, x_test=x_test, y_test=y_test, newroads_y_test = newroads_y_test)
+#salva_arrays(train_test_dir, x_test=x_test, y_test=y_test, newroads_y_test = newroads_y_test)
+salva_arrays(train_test_dir, x_test=x_test, y_test=y_test)
+
+
+info_tiles_test = {'patch_stride_test':patch_stride, 'len_tiles_test':len_tiles_test, 'shape_tiles_test':shape_tiles_test}
+
+with open(os.path.join(y_dir, 'info_tiles_test.pickle'), "wb") as fp: # Salva histórico (lista Python) para recuperar depois
+    pickle.dump(info_tiles_test, fp)
+    
+# with open(os.path.join(y_dir, 'len_tiles_test.pickle'), "wb") as fp: # Salva histórico (lista Python) para recuperar depois
+#     pickle.dump(len_tiles_test, fp)
+    
+# with open(os.path.join(y_dir, 'shape_tiles_test.pickle'), "wb") as fp: # Salva histórico (lista Python) para recuperar depois
+#     pickle.dump(shape_tiles_test, fp)
 
 

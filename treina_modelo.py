@@ -24,6 +24,7 @@ tf.config.set_logical_device_configuration(
 # %% Diretórios de entrada e saída
 
 input_dir = 'saida_mnih/'
+y_dir = 'y_directory/'
 output_dir = 'saida_mnih_segunda_rede/'
 
 
@@ -34,5 +35,5 @@ from functions_bib import treina_modelo
 # %% Teste da Função
 
 #tf.config.run_functions_eagerly(False)
-treina_modelo(input_dir, output_dir, epochs=2000, early_loss=False, 
+treina_modelo(input_dir, y_dir, output_dir, epochs=2000, early_loss=False, 
               model_type='resunet chamorro', loss='mse', lr_decay=True)

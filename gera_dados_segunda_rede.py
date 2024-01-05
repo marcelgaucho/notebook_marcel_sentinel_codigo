@@ -5,6 +5,7 @@ Created on Wed May 17 17:07:15 2023
 @author: marcel.rotunno
 """
 
+import h5py
 from osgeo import gdal
 
 import tensorflow as tf 
@@ -26,6 +27,7 @@ from functions_bib import gera_dados_segunda_rede
 # %% Teste da função de avaliação
 
 input_dir = r'entrada/'
+y_dir = r'y_directory/'
 output_dir = r'saida_mnih/'
 
-gera_dados_segunda_rede(input_dir, output_dir, etapa=2)
+gera_dados_segunda_rede(input_dir, y_dir, output_dir, etapa=3)

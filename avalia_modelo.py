@@ -9,14 +9,15 @@ from osgeo import gdal
 
 import tensorflow as tf 
 import os
+import pdb
 
 # Desabilita GPU
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 
 #tf.config.threading.set_inter_op_parallelism_threads(2)
 #tf.config.threading.set_intra_op_parallelism_threads(2)
-tf.config.threading.set_inter_op_parallelism_threads(3)
-tf.config.threading.set_intra_op_parallelism_threads(3)
+tf.config.threading.set_inter_op_parallelism_threads(2)
+tf.config.threading.set_intra_op_parallelism_threads(2)
 print("Num GPUs Available: ", len(tf.config.experimental.list_physical_devices('GPU')))
 
 # %%
@@ -25,8 +26,13 @@ from functions_bib import avalia_modelo
 
 # %% Teste da função de avaliação
 
-input_dir = 'early_cross_f1_chamorro/'
-output_dir = 'early_100_cross_f1_chamorro_pos/'
+input_dir = r'entrada/'
+y_dir = r'y_directory/'
+output_dir = r'saida_mnih_dice/'
+print('Input Dir: ', input_dir)
+print('Y Dir: ', y_dir)
+print('Output Dir: ', output_dir)
 
-dicio_resultados = avalia_modelo(input_dir, output_dir, metric_name = 'F1-Score',
-                                 etapa=5, dist_buffers = [0, 1], std_blur = 1, subpatch_size=8, k=20)
+#pdb.set_trace()
+dicio_resultados = avalia_modelo(input_dir, y_dir, output_dir, metric_name = 'F1-Score',
+                                 etapa=5, dist_buffers = [0, 3], avalia_train=True)
