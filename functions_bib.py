@@ -17,6 +17,7 @@ import time
 import datetime
 import types
 import gc
+from pathlib import Path
 
 from tensorflow.keras.layers import Input, concatenate, Conv2D, BatchNormalization, Activation 
 from tensorflow.keras.layers import MaxPool2D, Conv2DTranspose, UpSampling2D, Concatenate
@@ -54,7 +55,7 @@ def load_tiff_image(image):
 
 
 def load_tiff_image_reference(image):
-    print (image)
+    print(image)
     gdal_header = gdal.Open(image)
     img_gdal = gdal_header.ReadAsArray()
     #img = np.expand_dims(img_gdal, 2)
@@ -1954,12 +1955,9 @@ def gera_graficos(metrics_dirs_list, lista_nomes_exp, save_path=r''):
 
 # Avalia um modelo segundo conjuntos de treino, validação, teste e mosaicos de teste
 def avalia_modelo(input_dir: str, y_dir: str, output_dir: str, metric_name = 'F1-Score', 
-                  etapa=3, dist_buffers = [3], std_blur = 0.4, subpatch_size=32,
-                  k=3, avalia_train=False):
+                  dist_buffers = [3], avalia_train=False, avalia_diff=False):
     metric_name = metric_name
-    etapa = etapa
     dist_buffers = dist_buffers
-    std_blur = std_blur
     
     # Nome do modelo salvo
     best_model_filename = 'best_model'
@@ -2174,8 +2172,8 @@ def avalia_modelo(input_dir: str, y_dir: str, output_dir: str, metric_name = 'F1
     
     # Gera Mosaicos de Teste
     # Avalia Mosaicos de Teste
-    if not os.path.exists(os.path.join(input_dir, 'y_mosaics.npy')) or \
-       not not os.path.exists(os.path.join(output_dir, 'pred_mosaics.npy')):
+    if not os.path.exists(os.path.join(y_dir, 'y_mosaics.npy')) or \
+       not os.path.exists(os.path.join(output_dir, 'pred_mosaics.npy')):
 
         # Stride e Dimensões do Tile
         with open(y_dir + 'info_tiles_test.pickle', "rb") as fp:   
@@ -2235,7 +2233,7 @@ def avalia_modelo(input_dir: str, y_dir: str, output_dir: str, metric_name = 'F1
     
     for dist in dist_buffers:
         # Buffer dos Mosaicos de Referência
-        if not os.path.exists(os.path.join(y_dir, f'buffers_y_mosaics_{dist}px.npy')):
+        if not os.path.exists(os.path.join(y_dir, f'buffer_y_mosaics_{dist}px.npy')):
             buffers_y_mosaics[dist] = buffer_patches(y_mosaics, dist_cells=dist)
             np.save(y_dir + f'buffer_y_mosaics_{dist}px.npy', buffers_y_mosaics[dist])
             
@@ -2271,19 +2269,111 @@ def avalia_modelo(input_dir: str, y_dir: str, output_dir: str, metric_name = 'F1
     buffers_pred_mosaics = None
     
     gc.collect()
+    
+    
+    # Gera Diferença Referente a Novas Estradas e
+    # Avalia Novas Estradas
+    if avalia_diff:
+        if not os.path.exists(os.path.join(y_dir, 'y_tiles_diff.npy')) or \
+           not os.path.exists(os.path.join(output_dir, 'pred_tiles_diff.npy')):
+                        
+            # Lista de Tiles de Referência de Antes
+            test_labels_tiles_before_dir = Path(r'tiles/masks/2016/test')
+            test_labels_tiles_before = list(test_labels_tiles_before_dir.glob('*.tif'))
+        
+            # Lista de Tiles Preditos (referente a Depois)
+            test_labels_tiles_predafter = list(Path(output_dir).glob('outmosaic*.tif'))
+        
+            # Extrai Diferenca entre Predição e Referência de Antes para
+            # Computar Novas Estradas
+            for tile_before, tile_after in zip(test_labels_tiles_before, test_labels_tiles_predafter):
+                print(f'Extraindo Diferença entre {tile_after.name} e {tile_before.name}')
+                suffix_extension = Path(tile_after).name.replace('outmosaic_', '', 1)
+                out_raster_path = Path(output_dir) / f"diffnewroad_{suffix_extension}"
+                extract_difference_reftiles(str(tile_before), str(tile_after), str(out_raster_path), buffer_px=3)
+                
+            # Lista de caminhos dos rótulos dos Tiles de Diferança de Teste
+            test_labels_tiles_diff_dir = Path(r'tiles/masks/Diff/test')
+            test_labels_tiles_diff = list(test_labels_tiles_diff_dir.glob('*.tif'))
+            
+            # Lista e Array da referência para os Tiles de Diferença
+            y_tiles_diff = [gdal.Open(str(tile_diff)).ReadAsArray() for tile_diff in test_labels_tiles_diff]
+            y_tiles_diff = stack_uneven(y_tiles_diff)[..., np.newaxis]
+            
+            # Lista e Array da predição da Diferença
+            test_labels_tiles_preddiff = list(Path(output_dir).glob('diffnewroad*.tif'))
+            pred_tiles_diff = [gdal.Open(str(tile_preddiff)).ReadAsArray() for tile_preddiff in test_labels_tiles_preddiff]
+            pred_tiles_diff = stack_uneven(pred_tiles_diff)[..., np.newaxis]
+            
+            # Salva Arrays dos Rótulos e Predições das Diferenças
+            salva_arrays(y_dir, y_tiles_diff=y_tiles_diff)
+            salva_arrays(output_dir, pred_tiles_diff=pred_tiles_diff)
+            
+            
+        # Lê Arrays dos Rótulos e Predições das Diferenças
+        y_tiles_diff = np.load(y_dir + 'y_tiles_diff.npy')
+        pred_tiles_diff = np.load(output_dir + 'pred_tiles_diff.npy')
+        
+        # Buffer dos Tiles de Referência e Predição da Diferença
+        buffers_y_tiles_diff = {}
+        buffers_pred_tiles_diff = {}
+        
+        for dist in dist_buffers:
+            # Buffer da referência dos Tiles de Diferença
+            if not os.path.exists(os.path.join(y_dir, f'buffer_y_tiles_diff_{dist}px.npy')):
+                buffers_y_tiles_diff[dist] = buffer_patches(y_tiles_diff, dist_cells=dist)
+                np.save(y_dir + f'buffer_y_tiles_diff_{dist}px.npy', buffers_y_tiles_diff[dist])
+                
+            # Buffer da predição da Diferença   
+            if not os.path.exists(os.path.join(output_dir, f'buffer_pred_tiles_diff_{dist}px.npy')):
+                buffers_pred_tiles_diff[dist] = buffer_patches(pred_tiles_diff, dist_cells=dist)
+                np.save(output_dir + f'buffer_pred_tiles_diff_{dist}px.npy', buffers_pred_tiles_diff[dist])
+                
+        
+        # Lê buffers das Diferenças
+        for dist in dist_buffers:
+            buffers_y_tiles_diff[dist] = np.load(y_dir + f'buffer_y_tiles_diff_{dist}px.npy')
+            buffers_pred_tiles_diff[dist] = np.load(output_dir + f'buffer_pred_tiles_diff_{dist}px.npy')
+            
+        # Avaliação da Qualidade para a Diferença
+        # Relaxed Metrics for difference tiles
+        relaxed_precision_diff, relaxed_recall_diff, relaxed_f1score_diff = {}, {}, {}
+          
+        for dist in dist_buffers:
+            with open(output_dir + f'relaxed_metrics_{dist}px.txt', 'a') as f:
+                relaxed_precision_diff[dist], relaxed_recall_diff[dist], relaxed_f1score_diff[dist] = compute_relaxed_metrics(y_tiles_diff, 
+                                                                                                            pred_tiles_diff, buffers_y_tiles_diff[dist],
+                                                                                                            buffers_pred_tiles_diff[dist], 
+                                                                                                            nome_conjunto = 'Mosaicos de Diferenca', 
+                                                                                                            print_file=f)
+                
+        # Libera memória
+        y_tiles_diff = None
+        pred_tiles_diff = None
+        
+        buffers_y_tiles_diff = None
+        buffers_pred_tiles_diff = None
+        
+        gc.collect()
             
     
     # Save and Return dictionary with the values of precision, recall and F1-Score for all the groups (Train, Validation, Test, Mosaics of Test)
     if not avalia_train:
         relaxed_precision_train = None
         relaxed_recall_train = None
-        relaxed_f1score_train = None        
+        relaxed_f1score_train = None
+
+    if not avalia_diff:
+        relaxed_precision_diff = None
+        relaxed_recall_diff = None
+        relaxed_f1score_diff = None           
         
     dict_results = {
         'relaxed_precision_train': relaxed_precision_train, 'relaxed_recall_train': relaxed_recall_train, 'relaxed_f1score_train': relaxed_f1score_train,
         'relaxed_precision_valid': relaxed_precision_valid, 'relaxed_recall_valid': relaxed_recall_valid, 'relaxed_f1score_valid': relaxed_f1score_valid,
         'relaxed_precision_test': relaxed_precision_test, 'relaxed_recall_test': relaxed_recall_test, 'relaxed_f1score_test': relaxed_f1score_test,
-        'relaxed_precision_mosaics': relaxed_precision_mosaics, 'relaxed_recall_mosaics': relaxed_recall_mosaics, 'relaxed_f1score_mosaics': relaxed_f1score_mosaics             
+        'relaxed_precision_mosaics': relaxed_precision_mosaics, 'relaxed_recall_mosaics': relaxed_recall_mosaics, 'relaxed_f1score_mosaics': relaxed_f1score_mosaics,
+        'relaxed_precision_diff': relaxed_precision_diff, 'relaxed_recall_diff': relaxed_recall_diff, 'relaxed_f1score_diff': relaxed_f1score_diff
         }
     
     with open(output_dir + 'resultados_metricas' + '.pickle', "wb") as fp: # Salva dicionário com métricas do resultado do experimento
@@ -2749,7 +2839,7 @@ def gera_mosaicos(output_dir, pred_array, labels_paths, prefix='outmosaic', patc
         i = i+len_tiles_test[i_mosaic]
         i_mosaic += 1  
         
-    """    
+        
     # Salva mosaicos
     labels_paths = labels_paths
     output_dir = output_dir
@@ -2772,7 +2862,7 @@ def gera_mosaicos(output_dir, pred_array, labels_paths, prefix='outmosaic', patc
             save_raster_reference(labels_path, out_mosaic_path, pred_test_mosaic, is_float=True)
         else:
             save_raster_reference(labels_path, out_mosaic_path, pred_test_mosaic, is_float=False)
-    """
+    
             
             
     # Retorna lista de mosaicos
@@ -3433,3 +3523,67 @@ def stack_uneven(arrays, fill_value=0.):
       # Overwrite a block slice of `result` with this array `a`
       result[i][slices] = a
     return result
+
+
+def extract_difference_reftiles(tile_before: str, tile_after: str, out_raster_path:str, buffer_px: int=3):
+    '''
+    Extrai diferença entre tiles de referência de diferentes épocas. 
+    Ela é computada assim: Tile Depois - Buffer(Tile Antes).
+    
+    Exemplo: extract_difference_reftiles('tiles\\masks\\2016\\test\\reftile_2016_15.tif', 
+                                         'tiles\\masks\\2018\\test\\reftile_2018_15.tif',
+                                         'tiles\\masks\\Diff\\test\\diff_reftile_2018_2016_15.tif')
+
+    Parameters
+    ----------
+    tile_before : str
+        DESCRIPTION.
+    tile_after : str
+        DESCRIPTION.
+    out_raster_path : str
+        DESCRIPTION.
+    buffer_px : int, optional
+        DESCRIPTION. The default is 3.
+
+    Returns
+    -------
+    None, but save the tile difference as raster .tif in the out_raster_path.
+
+    '''
+    # Open Images with GDAL
+    gdal_header_tile_before = gdal.Open(str(tile_before))
+    gdal_header_tile_after = gdal.Open(str(tile_after)) 
+    
+    # X and Y size of image
+    xsize = gdal_header_tile_before.RasterXSize
+    ysize = gdal_header_tile_after.RasterYSize
+    
+    # Read as Rasters as Numpy Array
+    tile_before_arr = gdal_header_tile_before.ReadAsArray()
+    tile_after_arr = gdal_header_tile_after.ReadAsArray()
+    
+    # Replace NODATA with 0s to make calculations
+    # Replace only Array After because the Buffer of Array Before already eliminates Nodata
+    tile_after_arr_0 = tile_after_arr.copy()
+    tile_after_arr_0[tile_after_arr_0==255] = 0
+    
+    # Make Buffer on Image Before and Subtract it from Image After
+    # Calculate Difference: Tile After - Buffer(Tile Before)
+    # Consider only Positive Values (New Roads)
+    dist_buffer_px = 3
+    buffer_before = array_buffer(tile_before_arr, dist_buffer_px)
+    diff_after_before = np.clip(tile_after_arr_0.astype(np.int16) - buffer_before.astype(np.int16), 0, 1)
+    diff_after_before = diff_after_before.astype(np.uint8)
+    diff_after_before[tile_after_arr==255] = 0 # Set Original Nodata values to 0, output doesn't contain Nodata
+    
+    # Export Raster
+    driver = gdal.GetDriverByName('GTiff') # Geotiff Driver
+    file = driver.Create(out_raster_path, xsize, ysize, bands=1, eType=gdal.GDT_Byte) # Tipo Unsigned Int 8 bits
+    
+    file_band = file.GetRasterBand(1) 
+    file_band.WriteArray(diff_after_before)
+    
+    file.SetGeoTransform(gdal_header_tile_after.GetGeoTransform())
+    file.SetProjection(gdal_header_tile_after.GetProjection())    
+    
+    file.FlushCache()
