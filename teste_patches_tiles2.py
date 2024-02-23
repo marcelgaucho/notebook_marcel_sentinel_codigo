@@ -1,3 +1,5 @@
+
+
 # -*- coding: utf-8 -*-
 """
 Created on Tue Jan 10 19:01:23 2023
@@ -12,13 +14,11 @@ from osgeo import gdal
 import os
 import math
 import pickle
-from functions_bib import load_tiff_image, load_tiff_image_reference, normalization
-from functions_bib import extract_patches, salva_arrays, train_unet, build_model
-from functions_bib import show_graph_loss_accuracy, compute_relaxed_metrics, unpatch_reference
-from functions_bib import buffer_patches, save_raster_reference, Test_Step
-from functions_bib import extract_tiles, filtra_tiles_estradas, copia_tiles_filtrados, extract_patches_from_tiles
+from functions_extract import normalization
+from functions_extract import salva_arrays
+from functions_extract import filtra_tiles_estradas, extract_patches_from_tiles
 
-
+                                    
 # Images Directories
 train_test_dir = 'entrada/'
 y_dir = 'y_directory/'
@@ -26,16 +26,19 @@ y_dir = 'y_directory/'
 # %% Extrai patches (Info)
 
 # Tamanho do patch. Patch é quadrado (altura=largura)
-patch_size = 128
+# patch_size = 224
+patch_size = 256
 
 # Stride do Patch. Com um stride menor que a largura do patch há sobreposição entre os patches
 # 25% de sobreposição entre patches
 patch_overlap = 0.25
-#patch_overlap = 0.0625 # In Mnih the overlap is 14 pixels. 224*0.0625 = 14
+# patch_overlap = 0.0625 # In Mnih the overlap is 14 pixels. 224*0.0625 = 14
 patch_stride = patch_size - int(patch_size * patch_overlap)
 
 # Número de canais da imagem/patch
-image_channels = 4
+# image_channels = 4
+image_channels = 3
+
 
 # Dimensões do patch
 input_shape = (patch_size, patch_size, image_channels)
@@ -45,18 +48,18 @@ input_shape = (patch_size, patch_size, image_channels)
 
 # %% Varre diretório de treino e de validação para abrir os tiles dos quais os patches serão extraídos
 
-# train_imgs_tiles_dir = r'dataset_massachusetts_mnih/train/input'
-# valid_imgs_tiles_dir = r'dataset_massachusetts_mnih/validation/input'
-# train_labels_tiles_dir = r'dataset_massachusetts_mnih/train/maps'
-# valid_labels_tiles_dir = r'dataset_massachusetts_mnih/validation/maps'
-# test_imgs_tiles_dir = r'dataset_massachusetts_mnih/test/input'
-# test_labels_tiles_dir = r'dataset_massachusetts_mnih/test/maps'
-train_imgs_tiles_dir = r'tiles/imgs/train'
-valid_imgs_tiles_dir = r'tiles/imgs/valid'
-train_labels_tiles_dir = r'tiles/masks/2016/train'
-valid_labels_tiles_dir = r'tiles/masks/2018/valid'
-test_imgs_tiles_dir = r'tiles/imgs/test'
-test_labels_tiles_dir = r'tiles/masks/2018/test'
+train_imgs_tiles_dir = r'dataset_massachusetts_mnih/train/input'
+valid_imgs_tiles_dir = r'dataset_massachusetts_mnih/validation/input'
+train_labels_tiles_dir = r'dataset_massachusetts_mnih/train/maps'
+valid_labels_tiles_dir = r'dataset_massachusetts_mnih/validation/maps'
+test_imgs_tiles_dir = r'dataset_massachusetts_mnih/test/input'
+test_labels_tiles_dir = r'dataset_massachusetts_mnih/test/maps'
+# train_imgs_tiles_dir = r'tiles_sentinel/imgs/train'
+# valid_imgs_tiles_dir = r'tiles_sentinel/imgs/valid'
+# train_labels_tiles_dir = r'tiles_sentinel/masks/2016/train'
+# valid_labels_tiles_dir = r'tiles_sentinel/masks/2016/valid'
+# test_imgs_tiles_dir = r'tiles_sentinel/imgs/test'
+# test_labels_tiles_dir = r'tiles_sentinel/masks/2018/test'
 
 
 #newroads_valid_labels_tiles_dir = r'new_teste_tiles\masks\valid_new_roads'
@@ -88,9 +91,9 @@ test_imgs_labels_dict = dict(zip(test_imgs_tiles, test_labels_tiles))
 # %% Extrai patches de treino
 
 
-x_train, y_train = extract_patches_from_tiles(train_imgs_labels_dict, patch_size, patch_stride)
+x_train, y_train, _, _ = extract_patches_from_tiles(train_imgs_labels_dict, patch_size, patch_stride)
 
-x_valid, y_valid = extract_patches_from_tiles(valid_imgs_labels_dict, patch_size, patch_stride)
+x_valid, y_valid, _, _ = extract_patches_from_tiles(valid_imgs_labels_dict, patch_size, patch_stride)
 
 x_test, y_test, len_tiles_test, shape_tiles_test = extract_patches_from_tiles(test_imgs_labels_dict, patch_size, patch_stride, border_patches=True)
 
@@ -105,10 +108,29 @@ test_imgs_labels_dict0 = {r'new_teste_tiles\\imgs\\test\\tile_0_2.tif': r'new_te
 
 x_test0, y_test0 = extract_patches_from_tiles(test_imgs_labels_dict0, patch_size, patch_stride, border_patches=True)
 
+# %% Seleciona patches de x_train que não contenham NODATA
+
+nodata_value = -9999
+patches_with_nodata_indexes = [i for i in range(len(x_train)) if not np.any(x_train[i] == nodata_value)]
+x_train = x_train[patches_with_nodata_indexes]
+y_train = y_train[patches_with_nodata_indexes]
+
+
+
+# %% Seleciona patches de x_valid que não contenham NODATA
+
+nodata_value = -9999
+patches_with_nodata_indexes = [i for i in range(len(x_valid)) if not np.any(x_valid[i] == nodata_value)]
+x_valid = x_valid[patches_with_nodata_indexes]
+y_valid = y_valid[patches_with_nodata_indexes]
+
+
+
+
 # %% Filtra Patches que contenham mais que 1% de pixels de estrada
 
-x_train, y_train, indices_maior_train = filtra_tiles_estradas(x_train, y_train, 3)
-x_valid, y_valid, indices_maior_valid = filtra_tiles_estradas(x_valid, y_valid, 3)
+x_train, y_train, indices_maior_train = filtra_tiles_estradas(x_train, y_train, 0.5)
+x_valid, y_valid, indices_maior_valid = filtra_tiles_estradas(x_valid, y_valid, 1)
 
 
 # x_valid, y_valid, indices_maior_valid = filtra_tiles_estradas(x_valid, y_valid, 5)
@@ -146,9 +168,9 @@ x_test = x_test/255
 
 # x_valid_filter, y_valid_filter, indices_maior_valid = filtra_tiles_estradas(x_valid, y_valid, 0.5)
 
-x_train_filter, y_train_filter, indices_maior_train = filtra_tiles_estradas(x_train, y_train, 3)
+x_train_filter, y_train_filter, indices_maior_train = filtra_tiles_estradas(x_train, y_train, 5)
 
-x_valid_filter, y_valid_filter, indices_maior_valid = filtra_tiles_estradas(x_valid, y_valid, 3)
+x_valid_filter, y_valid_filter, indices_maior_valid = filtra_tiles_estradas(x_valid, y_valid, 1)
 
 x_test_filter, y_test_filter, indices_maior_test = filtra_tiles_estradas(x_test, y_test, 0)
 
@@ -209,7 +231,9 @@ def aumento_dados(x, y):
 
 # %% Faz aumento de dados
 
-x_train, y_train = aumento_dados(x_train, y_train)
+# x_train, y_train = aumento_dados(x_train, y_train)
+x_train_filter, y_train_filter = aumento_dados(x_train_filter, y_train_filter)
+
 
 #x_valid, y_valid = aumento_dados(x_valid, y_valid)
 
