@@ -15,8 +15,9 @@ import os
 import math
 import pickle
 from functions_extract import normalization
-from functions_extract import salva_arrays
+from functions_bib import salva_arrays
 from functions_extract import filtra_tiles_estradas, extract_patches_from_tiles
+
 
                                     
 # Images Directories
@@ -48,12 +49,12 @@ input_shape = (patch_size, patch_size, image_channels)
 
 # %% Varre diretório de treino e de validação para abrir os tiles dos quais os patches serão extraídos
 
-train_imgs_tiles_dir = r'dataset_massachusetts_mnih/train/input'
-valid_imgs_tiles_dir = r'dataset_massachusetts_mnih/validation/input'
-train_labels_tiles_dir = r'dataset_massachusetts_mnih/train/maps'
-valid_labels_tiles_dir = r'dataset_massachusetts_mnih/validation/maps'
-test_imgs_tiles_dir = r'dataset_massachusetts_mnih/test/input'
-test_labels_tiles_dir = r'dataset_massachusetts_mnih/test/maps'
+train_imgs_tiles_dir = r'dataset_massachusetts_mnih_mod/train/input'
+valid_imgs_tiles_dir = r'dataset_massachusetts_mnih_mod/validation/input'
+train_labels_tiles_dir = r'dataset_massachusetts_mnih_mod/train/maps'
+valid_labels_tiles_dir = r'dataset_massachusetts_mnih_mod/validation/maps'
+test_imgs_tiles_dir = r'dataset_massachusetts_mnih_mod/test/input'
+test_labels_tiles_dir = r'dataset_massachusetts_mnih_mod/test/maps'
 # train_imgs_tiles_dir = r'tiles_sentinel/imgs/train'
 # valid_imgs_tiles_dir = r'tiles_sentinel/imgs/valid'
 # train_labels_tiles_dir = r'tiles_sentinel/masks/2016/train'
@@ -111,52 +112,60 @@ x_test0, y_test0 = extract_patches_from_tiles(test_imgs_labels_dict0, patch_size
 # %% Seleciona patches de x_train que não contenham NODATA
 
 nodata_value = -9999
-patches_with_nodata_indexes = [i for i in range(len(x_train)) if not np.any(x_train[i] == nodata_value)]
-x_train = x_train[patches_with_nodata_indexes]
-y_train = y_train[patches_with_nodata_indexes]
+patches_with_no_nodata_indexes = [i for i in range(len(x_train)) if not np.any(x_train[i] == nodata_value)]
+x_train = x_train[patches_with_no_nodata_indexes]
+y_train = y_train[patches_with_no_nodata_indexes]
 
 
 
 # %% Seleciona patches de x_valid que não contenham NODATA
 
 nodata_value = -9999
-patches_with_nodata_indexes = [i for i in range(len(x_valid)) if not np.any(x_valid[i] == nodata_value)]
-x_valid = x_valid[patches_with_nodata_indexes]
-y_valid = y_valid[patches_with_nodata_indexes]
+patches_with_no_nodata_indexes = [i for i in range(len(x_valid)) if not np.any(x_valid[i] == nodata_value)]
+x_valid = x_valid[patches_with_no_nodata_indexes]
+y_valid = y_valid[patches_with_no_nodata_indexes]
+
+
+# %% Seleciona patches de x_train que não contenham NODATA
+
+# Descomentar se vai se usar a soma (255 + 255 + 255) como valor de Nodata
+# nodata_value = 765
+# patches_with_no_nodata_indexes1 = [i for i in range(len(x_valid)) if not np.any(x_valid[i].sum(axis=2) == nodata_value)]
+nodata_value = (255, 255, 255)
+patches_with_no_nodata_indexes = [i for i in range(len(x_train)) if not np.any((x_train[i] == nodata_value).all(axis=2))]
+x_train = x_train[patches_with_no_nodata_indexes]
+y_train = y_train[patches_with_no_nodata_indexes]
+
+
+# %% Seleciona patches de x_valid que não contenham NODATA
+
+# Descomentar se vai se usar a soma (255 + 255 + 255) como valor de Nodata
+# nodata_value = 765
+# patches_with_no_nodata_indexes1 = [i for i in range(len(x_valid)) if not np.any(x_valid[i].sum(axis=2) == nodata_value)]
+nodata_value = (255, 255, 255)
+patches_with_no_nodata_indexes = [i for i in range(len(x_valid)) if not np.any((x_valid[i] == nodata_value).all(axis=2))]
+x_valid = x_valid[patches_with_no_nodata_indexes]
+y_valid = y_valid[patches_with_no_nodata_indexes]
 
 
 
+# %% Filtra Patches que contenham mais que X% de pixels de estrada
 
-# %% Filtra Patches que contenham mais que 1% de pixels de estrada
-
-x_train, y_train, indices_maior_train = filtra_tiles_estradas(x_train, y_train, 0.5)
+x_train, y_train, indices_maior_train = filtra_tiles_estradas(x_train, y_train, 1)
 x_valid, y_valid, indices_maior_valid = filtra_tiles_estradas(x_valid, y_valid, 1)
 
-
-# x_valid, y_valid, indices_maior_valid = filtra_tiles_estradas(x_valid, y_valid, 5)
-# x_valid, y_valid, indices_maior_valid = filtra_tiles_estradas(x_valid, y_valid, 0.5)
-
-
-#x_test, y_test, indices_maior_test = filtra_tiles_estradas(x_test, y_test, 0)
-
 # %% For Masachussets Dataset
 
-x_train[x_train==-9999]=0
-x_valid[x_valid==-9999]=0
-x_test[x_test==-9999]=0 
+# Set 1 where y = 255 (1=Estrada, 0=Não-Estrada)
+y_train[y_train==255] = 1
+y_valid[y_valid==255] = 1
+y_test[y_test==255] = 1
 
-
-
-# y_train[y_train==255] = 1
-# y_valid[y_valid==255] = 1
-# y_test[y_test==255] = 1
-y_train[y_train==255] = 0
-y_valid[y_valid==255] = 0
-y_test[y_test==255] = 0
 
 
 # %% For Masachussets Dataset
 
+# Normaliza dados
 x_train = x_train/255
 x_valid = x_valid/255
 x_test = x_test/255
@@ -168,7 +177,7 @@ x_test = x_test/255
 
 # x_valid_filter, y_valid_filter, indices_maior_valid = filtra_tiles_estradas(x_valid, y_valid, 0.5)
 
-x_train_filter, y_train_filter, indices_maior_train = filtra_tiles_estradas(x_train, y_train, 5)
+x_train_filter, y_train_filter, indices_maior_train = filtra_tiles_estradas(x_train, y_train, 3)
 
 x_valid_filter, y_valid_filter, indices_maior_valid = filtra_tiles_estradas(x_valid, y_valid, 1)
 
@@ -459,4 +468,36 @@ with open(os.path.join(y_dir, 'info_tiles_test.pickle'), "wb") as fp: # Salva hi
 # with open(os.path.join(y_dir, 'shape_tiles_test.pickle'), "wb") as fp: # Salva histórico (lista Python) para recuperar depois
 #     pickle.dump(shape_tiles_test, fp)
 
+# %% Salva dados como dataset
 
+import tensorflow as tf
+from pathlib import Path
+
+# Path para salvar os datasets
+train_test_dir_path = Path(train_test_dir)
+
+# Build Datasets
+# Train Dataset
+train_dataset =  tf.data.Dataset.from_tensor_slices((x_train, y_train))
+
+# Valid Dataset
+valid_dataset= tf.data.Dataset.from_tensor_slices((x_valid, y_valid))
+
+# Test Dataset
+test_dataset= tf.data.Dataset.from_tensor_slices((x_test, y_test))
+
+# Save Datasets
+# Cria diretório para salvar Datasets
+train_dataset_path = train_test_dir_path / 'train_dataset'
+train_dataset_path.mkdir()
+
+valid_dataset_path = train_test_dir_path / 'valid_dataset'
+valid_dataset_path.mkdir()
+
+test_dataset_path = train_test_dir_path / 'test_dataset'
+test_dataset_path.mkdir()
+
+# Save Datasets
+train_dataset.save(str(train_dataset_path))
+valid_dataset.save(str(valid_dataset_path))
+test_dataset.save(str(test_dataset_path))

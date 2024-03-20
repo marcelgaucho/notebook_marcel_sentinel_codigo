@@ -28,11 +28,11 @@ from functions_bib import avalia_modelo
 
 input_dir = r'entrada/'
 y_dir = r'y_directory/'
-output_dir = r'saida_mnih_dice/'
+output_dir = r'saida_unet_transformer_Base_Simples_dimembed128_mlp256_MaxFilters256_Heads6/'
 print('Input Dir: ', input_dir)
 print('Y Dir: ', y_dir)
 print('Output Dir: ', output_dir)
 
 #pdb.set_trace()
 dicio_resultados = avalia_modelo(input_dir, y_dir, output_dir, metric_name = 'F1-Score',
-                                 etapa=5, dist_buffers = [0, 3], avalia_train=True)
+                                 dist_buffers=[0, 3], avalia_train=False, avalia_ate_teste=True)

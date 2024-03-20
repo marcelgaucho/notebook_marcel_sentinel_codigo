@@ -30,6 +30,16 @@ from tensorflow.keras import backend as K
 
 from unetr_2d import config_dict, build_unetr_2d, Patches
 print(config_dict)
+from segformer_tf_k2.models import SegFormer_B0
+from segformer_tf_k2.models import SegFormer_B1
+from segformer_tf_k2.models import SegFormer_B2
+from segformer_tf_k2.models import SegFormer_B3
+from segformer_tf_k2.models import SegFormer_B4
+from segformer_tf_k2.models import SegFormer_B5
+from segformer_tf_k2.models.modules import MixVisionTransformer
+from segformer_tf_k2.models.Head import SegFormerHead
+from segformer_tf_k2.models.utils import ResizeLayer
+
 
 from sklearn.utils import shuffle
 
@@ -434,6 +444,24 @@ def build_model(input_shape, n_classes, model_type='unet'):
     elif model_type == 'unet transformer':
         return build_unetr_2d(input_shape, config_dict)
     
+    elif model_type == 'segformer_b0':
+        return SegFormer_B0(input_shape, n_classes)
+
+    elif model_type == 'segformer_b1':
+        return SegFormer_B1(input_shape, n_classes)  
+
+    elif model_type == 'segformer_b2':
+        return SegFormer_B2(input_shape, n_classes)    
+    
+    elif model_type == 'segformer_b3':
+        return SegFormer_B3(input_shape, n_classes)  
+    
+    elif model_type == 'segformer_b4':
+        return SegFormer_B4(input_shape, n_classes)  
+    
+    elif model_type == 'segformer_b5':
+        return SegFormer_B5(input_shape, n_classes)  
+    
     else:
         raise Exception("Model options are 'unet' and 'resunet' and 'resunet chamorro' and 'corred' and "
                         "'resunet chamorro pos' and 'resunet chamorro pos curta' and 'unet transformer'")
@@ -443,43 +471,6 @@ def build_model(input_shape, n_classes, model_type='unet'):
 
 
     
-
-
-# Define x_datagen e y_datagen, se for usar aumento de dados (aqui não está usando)
-x_datagen = None
-y_datagen = None
-
-
-def set_number_of_batches(qt_train_samples, qt_valid_samples, batch_size, data_augmentation, number_samples_for_generator=6):
-    # In case of data augmentation, the number of batches
-    # will be decided by the number of samples for the 
-    # augmentation generator  
-    if data_augmentation:
-        train_batchs_qtd = qt_train_samples//number_samples_for_generator
-        valid_batchs_qtd = qt_valid_samples//number_samples_for_generator
-    # Else it is decided by the batch size
-    else:
-        train_batchs_qtd = qt_train_samples//batch_size
-        valid_batchs_qtd = qt_valid_samples//batch_size
-
-    return train_batchs_qtd, valid_batchs_qtd
-
-
-def get_batch_samples(x, y, batch, batch_size, data_augmentation, number_samples_for_generator):
-    if data_augmentation:
-        x_batch = x[batch * number_samples_for_generator : (batch + 1) * number_samples_for_generator, : , : , :]
-        y_batch = y[batch * number_samples_for_generator : (batch + 1) * number_samples_for_generator, : , : , :]
-
-        x_iterator = x_datagen.flow(x_batch, seed=batch)
-        y_iterator = y_datagen.flow(y_batch, seed=batch)
-
-        x_batch = np.array([next(x_iterator)[0] for _ in range(batch_size)])
-        y_batch = np.array([next(y_iterator)[0] for _ in range(batch_size)])
-    else:
-        x_batch = x[batch * batch_size : (batch + 1) * batch_size, : , : , :]
-        y_batch = y[batch * batch_size : (batch + 1) * batch_size, : , : , :]
-
-    return x_batch, y_batch
 
 
 def train_unet(net, x_train, y_train, x_valid, y_valid, batch_size, epochs, early_stopping_epochs, early_stopping_delta, filepath, 
@@ -1329,6 +1320,9 @@ def treina_modelo(input_dir: str, y_dir: str, output_dir: str, model_type: str =
     None.
 
     '''
+    # TODO
+    # Completar código para train_with_dataset
+    
     # Marca tempo total do treinamento. Começa Contagem
     start = time.time()
     
@@ -1341,56 +1335,77 @@ def treina_modelo(input_dir: str, y_dir: str, output_dir: str, model_type: str =
         x_train = np.load(input_dir + 'x_train.npy')
         x_valid = np.load(input_dir + 'x_valid.npy')
     '''
+    if train_with_dataset:
+        # Load Datasets
+        train_dataset = tf.data.Dataset.load(input_dir + 'train_dataset/')
+        valid_dataset = tf.data.Dataset.load(input_dir + 'valid_dataset/')
+        test_dataset = tf.data.Dataset.load(input_dir + 'test_dataset/')
         
-    x_train = np.load(input_dir + 'x_train.npy')
-    x_valid = np.load(input_dir + 'x_valid.npy')
-    y_train = np.load(y_dir + 'y_train.npy')
-    y_valid = np.load(y_dir + 'y_valid.npy')
-    
-    # Faz codificação One-Hot dos Ys
-    y_train = to_categorical(y_train, num_classes=2, dtype='uint8')
-    y_valid = to_categorical(y_valid, num_classes=2, dtype='uint8')
-    
-    print('Shape dos arrays:')
-    print('Shape x_train: ', x_train.shape)
-    print('Shape y_train: ', y_train.shape)
-    print('Shape x_valid: ', x_valid.shape)
-    print('Shape y_valid: ', y_valid.shape)
-    print('')
+        print('Shape dos arrays:')
+        print('Shape X Train Dataset: ', (train_dataset.cardinality().numpy(),)+
+              iter(train_dataset).next()[0].numpy().shape)
+        print('Shape Y Train Dataset: ', (train_dataset.cardinality().numpy(),)+
+              iter(train_dataset).next()[1].numpy().shape)
+        print('Shape X Valid Dataset: ', (train_dataset.cardinality().numpy(),)+
+              iter(valid_dataset).next()[0].numpy().shape)
+        print('Shape Y Valid Dataset: ', (train_dataset.cardinality().numpy(),)+
+              iter(valid_dataset).next()[1].numpy().shape)
+        print('')
+        
+    else:
+        x_train = np.load(input_dir + 'x_train.npy')
+        x_valid = np.load(input_dir + 'x_valid.npy')
+        y_train = np.load(y_dir + 'y_train.npy')
+        y_valid = np.load(y_dir + 'y_valid.npy')
+        
+        # Faz codificação One-Hot dos Ys
+        y_train = to_categorical(y_train, num_classes=2, dtype='uint8')
+        y_valid = to_categorical(y_valid, num_classes=2, dtype='uint8')
+        
+        print('Shape dos arrays:')
+        print('Shape x_train: ', x_train.shape)
+        print('Shape y_train: ', y_train.shape)
+        print('Shape x_valid: ', x_valid.shape)
+        print('Shape y_valid: ', y_valid.shape)
+        print('')
+
+        # Transforma dados para tensores dentro da CPU para evitar falta de espaço na GPU
+        if not train_with_dataset:
+            with tf.device('/CPU:0'):
+                x_train = tf.convert_to_tensor(x_train)
+                y_train = tf.convert_to_tensor(y_train, dtype=tf.float32)
+                x_valid = tf.convert_to_tensor(x_valid)
+                y_valid = tf.convert_to_tensor(y_valid, dtype=tf.float32)
+        
+        # Livra memória no que for possível
+        gc.collect()  
+
     
     # Constroi modelo
-    # input_shape = (patch_size, patch_size, image_channels)
-    input_shape = (x_train.shape[1], x_train.shape[2], x_train.shape[3])
-    num_classes = 2
-    model = build_model(input_shape, num_classes, model_type=model_type)
-    # model.summary()
-    print('Input Patch Shape = ', input_shape)
-    print()
-    
-
-    # Definição dos hiperparâmetros
-    batch_size = 8
-    learning_rate = 0.001
-    #learning_rate = 0.01 # não estava convergindo na primeira rede
-    
-    epochs = epochs
-
-    # Parâmetros do Early Stopping
-    early_stopping = early_stopping
-    early_stopping_epochs = 20
-    #early_stopping_epochs = 2
-    #early_stopping_delta = 0.001 # aumento delta (percentual de diminuição da perda) equivalente a 0.1%
-    early_stopping_delta = 0.001 # aumento delta (percentual de diminuição da perda) equivalente a 0.1%
-
-    
-    # Sem Data Augmentation (Ele é feito direto no conjunto de treinamento)
-    data_augmentation = False
-    
-    # Otimizador
-    optimizer = Adam(learning_rate = learning_rate , beta_1=0.9)
-    #optimizer = SGD(learning_rate = learning_rate , momentum=0.9)
-    
+    if train_with_dataset:
+        # input_shape = (patch_size, patch_size, image_channels)
+        input_shape = iter(train_dataset).next()[0].numpy().shape
+        num_classes = 2
+        model = build_model(input_shape, num_classes, model_type=model_type)
+        # model.summary()
+        print('Input Patch Shape = ', input_shape)
+        print()
+        
+    else:
+        # input_shape = (patch_size, patch_size, image_channels)
+        input_shape = (x_train.shape[1], x_train.shape[2], x_train.shape[3])
+        num_classes = 2
+        model = build_model(input_shape, num_classes, model_type=model_type)
+        # model.summary()
+        print('Input Patch Shape = ', input_shape)
+        print()
+        
     # Compila o modelo
+    learning_rate = 0.001 # Learning Rate
+    #learning_rate = 0.01 # Learning Rate # não estava convergindo na primeira rede
+    optimizer = Adam(learning_rate = learning_rate , beta_1=0.9) # Otimizador
+    #optimizer = SGD(learning_rate = learning_rate , momentum=0.9) # Otimizador
+
     if loss == 'focal':
         focal_loss = CategoricalFocalCrossentropy(alpha=weights, gamma=gamma)
         #focal_loss = weighted_focal_loss(alpha=weights, gamma=gamma)
@@ -1399,7 +1414,7 @@ def treina_modelo(input_dir: str, y_dir: str, output_dir: str, model_type: str =
         #model.compile(loss = 'sparse_categorical_crossentropy', optimizer=adam, metrics=[metric])
         model.compile(loss = 'categorical_crossentropy', optimizer=optimizer, metrics=[metric, tf.keras.metrics.Precision(class_id=1), tf.keras.metrics.Recall(class_id=1)])
     elif loss == 'mse':
-        adam = SGD(learning_rate = learning_rate)
+        optimizer = SGD(learning_rate = learning_rate)
         model.compile(loss = 'mse', optimizer=optimizer, metrics=[metric, tf.keras.metrics.Precision(class_id=1), tf.keras.metrics.Recall(class_id=1)])
     elif loss == 'dice':
         model.compile(loss = dice_loss, optimizer=optimizer, metrics=[metric, tf.keras.metrics.Precision(class_id=1), tf.keras.metrics.Recall(class_id=1)])
@@ -1409,9 +1424,22 @@ def treina_modelo(input_dir: str, y_dir: str, output_dir: str, model_type: str =
         model.compile(loss = weighted_categorical_crossentropy(weights), optimizer=optimizer, metrics=[metric, tf.keras.metrics.Precision(class_id=1), tf.keras.metrics.Recall(class_id=1)])
         
         
-        
-        
+     # Definição dos Outros hiperparâmetros
+    batch_size = 16
+    
+    epochs = epochs
 
+    # Parâmetros do Early Stopping
+    early_stopping = early_stopping
+    early_stopping_epochs = 50
+    #early_stopping_epochs = 2
+    #early_stopping_delta = 0.001 # aumento delta (percentual de diminuição da perda) equivalente a 0.1%
+    early_stopping_delta = 0.001 # aumento delta (percentual de diminuição da perda) equivalente a 0.1%
+
+    if train_with_dataset:
+        shuffle_buffer = 100
+        train_dataset = train_dataset.shuffle(buffer_size=shuffle_buffer).batch(batch_size=batch_size).prefecth(buffer_size=1)
+    
     print('Hiperparâmetros:')
     print('Modelo:', model_type)
     print('Batch Size:', batch_size)
@@ -1426,17 +1454,10 @@ def treina_modelo(input_dir: str, y_dir: str, output_dir: str, model_type: str =
     print('Gamma para Focal Loss:', gamma)
     print()
         
-
-
     # Nome do modelo a ser salvo
     best_model_filename = best_model_filename
     
-    # Transforma dados para tensores dentro da CPU
-    with tf.device('/CPU:0'):
-        x_train = tf.convert_to_tensor(x_train)
-        y_train = tf.convert_to_tensor(y_train, dtype=tf.float32)
-        x_valid = tf.convert_to_tensor(x_valid)
-        y_valid = tf.convert_to_tensor(y_valid, dtype=tf.float32)
+
     
     # Treina o modelo
     # Testa se a métrica é string
@@ -1646,7 +1667,10 @@ def avalia_modelo(input_dir: str, y_dir: str, output_dir: str, metric_name = 'F1
     show_graph_loss_accuracy(np.asarray(history), 1, metric_name = metric_name, save=True, save_path=output_dir)
 
     # Load model
-    model = load_model(output_dir + best_model_filename + '.h5', compile=False, custom_objects={"Patches": Patches})
+    model = load_model(output_dir + best_model_filename + '.h5', compile=False, custom_objects={"Patches": Patches, 
+                                                                                                "MixVisionTransformer": MixVisionTransformer,
+                                                                                                "SegFormerHead": SegFormerHead,
+                                                                                                "ResizeLayer": ResizeLayer})
 
     # Avalia treino    
     if avalia_train:
